@@ -107,8 +107,8 @@ bool ha_short_valid = use_double_ha ? (haRed and haRed[1]) : haRed
 // C. Stack Logic
 bool a1_stack_bull = ema21 > ema50 and ema50 > ema200
 bool a1_stack_bear = ema21 < ema50 and ema50 < ema200
-bool a2_stack_bull = ema50 > ema200 
-bool a2_stack_bear = ema50 < ema200
+bool a2_stack_bull = ema21 > ema50 and ema50 > ema200 
+bool a2_stack_bear = ema21 < ema50 and ema50 < ema200
 
 // D. Zone Touches
 bool touch_a1_bull = low <= ema21 and low >= ema50 
