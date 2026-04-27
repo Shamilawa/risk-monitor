@@ -166,15 +166,20 @@ var bool trade_active = false
 if buy_a1 or buy_a2
     float entry = close
     sl_level := lowerATRBand_b
-    tp_level := entry + ((entry - sl_level) * rr_ratio)
+    float risk = entry - sl_level
+    float tp1  = entry + (risk * 0.7)
+    float tp2  = entry + (risk * 1.3)
     
-    // Draw SL Dash Line (2 bars forward)
+    // Draw SL & TP Dash Lines (2 bars forward)
     line.new(bar_index, sl_level, bar_index + 2, sl_level, xloc=xloc.bar_index, color=color.new(color.red, 50), style=line.style_dashed, width=1)
+    line.new(bar_index, tp1, bar_index + 2, tp1, xloc=xloc.bar_index, color=color.new(color.lime, 50), style=line.style_dashed, width=1)
+    line.new(bar_index, tp2, bar_index + 2, tp2, xloc=xloc.bar_index, color=color.new(color.lime, 50), style=line.style_dashed, width=1)
     
     // Use User-Defined Names
     string txt = buy_a1 ? txt_a1 : txt_a2
+    string tt  = "Buy " + txt + "\nSL: " + str.tostring(math.round(sl_level, 2)) + "\nTP1 (0.7R): " + str.tostring(math.round(tp1, 2)) + "\nTP2 (1.3R): " + str.tostring(math.round(tp2, 2))
     
-    label.new(bar_index, low, text=txt, style=_style_buy, color=color.green, textcolor=color.white, size=_size, tooltip="Buy " + txt + "\nSL: " + str.tostring(math.round(sl_level, 2)))
+    label.new(bar_index, low, text=txt, style=_style_buy, color=color.green, textcolor=color.white, size=_size, tooltip=tt)
     alert("Buy Signal (" + txt + ") Detected", alert.freq_once_per_bar)
     
     can_take_long := false 
@@ -184,15 +189,20 @@ if buy_a1 or buy_a2
 if sell_a1 or sell_a2
     float entry = close
     sl_level := upperATRBand_b
-    tp_level := entry - ((sl_level - entry) * rr_ratio)
+    float risk = sl_level - entry
+    float tp1  = entry - (risk * 0.7)
+    float tp2  = entry - (risk * 1.3)
     
-    // Draw SL Dash Line (2 bars forward)
+    // Draw SL & TP Dash Lines (2 bars forward)
     line.new(bar_index, sl_level, bar_index + 2, sl_level, xloc=xloc.bar_index, color=color.new(color.red, 50), style=line.style_dashed, width=1)
+    line.new(bar_index, tp1, bar_index + 2, tp1, xloc=xloc.bar_index, color=color.new(color.lime, 50), style=line.style_dashed, width=1)
+    line.new(bar_index, tp2, bar_index + 2, tp2, xloc=xloc.bar_index, color=color.new(color.lime, 50), style=line.style_dashed, width=1)
     
     // Use User-Defined Names
     string txt = sell_a1 ? txt_a1 : txt_a2
+    string tt  = "Sell " + txt + "\nSL: " + str.tostring(math.round(sl_level, 2)) + "\nTP1 (0.7R): " + str.tostring(math.round(tp1, 2)) + "\nTP2 (1.3R): " + str.tostring(math.round(tp2, 2))
     
-    label.new(bar_index, high, text=txt, style=_style_sell, color=color.red, textcolor=color.white, size=_size, tooltip="Sell " + txt + "\nSL: " + str.tostring(math.round(sl_level, 2)))
+    label.new(bar_index, high, text=txt, style=_style_sell, color=color.red, textcolor=color.white, size=_size, tooltip=tt)
     alert("Sell Signal (" + txt + ") Detected", alert.freq_once_per_bar)
     
     can_take_short := false
