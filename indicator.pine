@@ -34,6 +34,14 @@ float rr_ratio = input.float(2.0, "Risk:Reward Ratio", group=group_risk)
 // --- ATR BANDS (TheTrdFloor) SETTINGS ---
 group_atr = "ATR Bands (TheTrdFloor)"
 group_atr_table = "ATR Bands Table"
+group_auto = "Automation / Webhooks"
+
+mt5_symbol     = input.string("{{ticker}}", "MT5 Symbol Name", group=group_auto, tooltip="Use {{ticker}} for dynamic symbol or type your MT5 symbol (e.g., EURUSD.m)")
+risk_percent   = input.float(1.0, "Risk Per Trade (%)", minval=0.1, step=0.1, group=group_auto)
+use_json_alert = input.bool(true, "Send JSON Alerts (for MT5 Bridge)", group=group_auto)
+show_json_label = input.bool(false, "Copy Mode: Show JSON on Labels", group=group_auto, tooltip="When enabled, labels will display the raw JSON. Right-click the label -> Settings to copy the text.")
+
+
 
 int   atrPeriod_b      = input.int(3, "ATR Period (Bands)", minval=1, group=group_atr, tooltip="ATR value calculation period for the bands.")
 float atrMultiplier_b  = input.float(2.5, "ATR Band Scale Factor", step=0.1, minval=0.01, group=group_atr, tooltip="Scaling factor for the ATR bands.")
@@ -162,6 +170,9 @@ var float sl_level = na
 var float tp_level = na
 var bool trade_active = false 
 
+// Helper for MT5 Symbol
+string actual_s = mt5_symbol == "{{ticker}}" ? syminfo.ticker : mt5_symbol
+
 // Buy Execution
 if buy_a1 or buy_a2
     float entry = close
@@ -177,10 +188,14 @@ if buy_a1 or buy_a2
     
     // Use User-Defined Names
     string txt = buy_a1 ? txt_a1 : txt_a2
-    string tt  = "Buy " + txt + "\nSL: " + str.tostring(math.round(sl_level, 2)) + "\nTP1 (0.7R): " + str.tostring(math.round(tp1, 2)) + "\nTP2 (1.3R): " + str.tostring(math.round(tp2, 2))
+    string alert_msg = '{"a":"buy","s":"' + actual_s + '","r":' + str.tostring(risk_percent) + ',"sl":' + str.tostring(sl_level, format.mintick) + ',"tp1":' + str.tostring(tp1, format.mintick) + ',"tp2":' + str.tostring(tp2, format.mintick) + '}'
+    string tt  = "Buy " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + "\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + "\nTP2 (1.3R): " + str.tostring(tp2, format.mintick)
     
-    label.new(bar_index, low, text=txt, style=_style_buy, color=color.green, textcolor=color.white, size=_size, tooltip=tt)
-    alert("Buy Signal (" + txt + ") Detected", alert.freq_once_per_bar)
+    label.new(bar_index, low, text=show_json_label ? alert_msg : txt, style=_style_buy, color=color.green, textcolor=color.white, size=_size, tooltip=tt)
+    
+    // Automation Alert (Compact JSON for Copy-Paste)
+    alert(alert_msg, alert.freq_once_per_bar)
+    log.info(alert_msg)
     
     can_take_long := false 
     trade_active  := true
@@ -200,10 +215,14 @@ if sell_a1 or sell_a2
     
     // Use User-Defined Names
     string txt = sell_a1 ? txt_a1 : txt_a2
-    string tt  = "Sell " + txt + "\nSL: " + str.tostring(math.round(sl_level, 2)) + "\nTP1 (0.7R): " + str.tostring(math.round(tp1, 2)) + "\nTP2 (1.3R): " + str.tostring(math.round(tp2, 2))
+    string alert_msg = '{"a":"sell","s":"' + actual_s + '","r":' + str.tostring(risk_percent) + ',"sl":' + str.tostring(sl_level, format.mintick) + ',"tp1":' + str.tostring(tp1, format.mintick) + ',"tp2":' + str.tostring(tp2, format.mintick) + '}'
+    string tt  = "Sell " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + "\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + "\nTP2 (1.3R): " + str.tostring(tp2, format.mintick)
     
-    label.new(bar_index, high, text=txt, style=_style_sell, color=color.red, textcolor=color.white, size=_size, tooltip=tt)
-    alert("Sell Signal (" + txt + ") Detected", alert.freq_once_per_bar)
+    label.new(bar_index, high, text=show_json_label ? alert_msg : txt, style=_style_sell, color=color.red, textcolor=color.white, size=_size, tooltip=tt)
+    
+    // Automation Alert (Compact JSON for Copy-Paste)
+    alert(alert_msg, alert.freq_once_per_bar)
+    log.info(alert_msg)
     
     can_take_short := false
     trade_active   := true
