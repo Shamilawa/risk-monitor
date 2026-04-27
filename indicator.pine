@@ -1,5 +1,5 @@
 //@version=6
-indicator("Pro: Flow & Value (Custom Names)", overlay=true, max_labels_count=500)
+indicator("Pro: Flow & Value (Custom Names)", overlay=true, max_labels_count=500, max_lines_count=500)
 
 // -----------------------------------------------------------------------------
 // 1. SETUP & INPUTS
@@ -165,8 +165,11 @@ var bool trade_active = false
 // Buy Execution
 if buy_a1 or buy_a2
     float entry = close
-    sl_level := low - (atr * atr_mult)
+    sl_level := lowerATRBand_b
     tp_level := entry + ((entry - sl_level) * rr_ratio)
+    
+    // Draw SL Dash Line (2 bars forward)
+    line.new(bar_index, sl_level, bar_index + 2, sl_level, xloc=xloc.bar_index, color=color.new(color.red, 50), style=line.style_dashed, width=1)
     
     // Use User-Defined Names
     string txt = buy_a1 ? txt_a1 : txt_a2
@@ -180,8 +183,11 @@ if buy_a1 or buy_a2
 // Sell Execution
 if sell_a1 or sell_a2
     float entry = close
-    sl_level := high + (atr * atr_mult)
+    sl_level := upperATRBand_b
     tp_level := entry - ((sl_level - entry) * rr_ratio)
+    
+    // Draw SL Dash Line (2 bars forward)
+    line.new(bar_index, sl_level, bar_index + 2, sl_level, xloc=xloc.bar_index, color=color.new(color.red, 50), style=line.style_dashed, width=1)
     
     // Use User-Defined Names
     string txt = sell_a1 ? txt_a1 : txt_a2
@@ -192,15 +198,12 @@ if sell_a1 or sell_a2
     can_take_short := false
     trade_active   := true
 
-// Live TP/SL Lines
-plot(trade_active ? sl_level : na, "SL", color.red, 1, plot.style_linebr)
-plot(trade_active ? tp_level : na, "TP", color.lime, 1, plot.style_linebr)
+// Live TP/SL Lines (Removed as per request)
 
 // --- ATR BANDS PLOTTING ---
-plot(upperATRBand_b, "Upper ATR Band", color.new(color.green, 50), 2)
-plot(lowerATRBand_b, "Lower ATR Band", color.new(color.red, 50), 2)
-plot(showTPBands_b ? scaledTPLong_b : na, "Upper TP Band", color.new(color.white, 80), 1)
-plot(showTPBands_b ? scaledTPShort_b : na, "Lower TP Band", color.new(color.yellow, 80), 1)
+plot(upperATRBand_b, "Upper ATR Band", color.new(color.gray, 75), 1)
+plot(lowerATRBand_b, "Lower ATR Band", color.new(color.gray, 75), 1)
+// TP Band plots removed
 
 // Dashboard
 var table dash = table.new(position.bottom_right, 2, 4, bgcolor=color.new(color.black, 50))
