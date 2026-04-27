@@ -188,7 +188,7 @@ if buy_a1 or buy_a2
     
     // Use User-Defined Names
     string txt = buy_a1 ? txt_a1 : txt_a2
-    string alert_msg = '{"a":"buy","s":"' + actual_s + '","r":' + str.tostring(risk_percent) + ',"sl":' + str.tostring(sl_level, format.mintick) + ',"tp1":' + str.tostring(tp1, format.mintick) + ',"tp2":' + str.tostring(tp2, format.mintick) + '}'
+    string alert_msg = "buy," + actual_s + "," + str.tostring(entry, format.mintick) + "," + str.tostring(risk_percent) + "," + str.tostring(sl_level, format.mintick) + "," + str.tostring(tp1, format.mintick) + "," + str.tostring(tp2, format.mintick)
     string tt  = "Buy " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + "\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + "\nTP2 (1.3R): " + str.tostring(tp2, format.mintick)
     
     label.new(bar_index, low, text=show_json_label ? alert_msg : txt, style=_style_buy, color=color.green, textcolor=color.white, size=_size, tooltip=tt)
@@ -215,7 +215,7 @@ if sell_a1 or sell_a2
     
     // Use User-Defined Names
     string txt = sell_a1 ? txt_a1 : txt_a2
-    string alert_msg = '{"a":"sell","s":"' + actual_s + '","r":' + str.tostring(risk_percent) + ',"sl":' + str.tostring(sl_level, format.mintick) + ',"tp1":' + str.tostring(tp1, format.mintick) + ',"tp2":' + str.tostring(tp2, format.mintick) + '}'
+    string alert_msg = "sell," + actual_s + "," + str.tostring(entry, format.mintick) + "," + str.tostring(risk_percent) + "," + str.tostring(sl_level, format.mintick) + "," + str.tostring(tp1, format.mintick) + "," + str.tostring(tp2, format.mintick)
     string tt  = "Sell " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + "\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + "\nTP2 (1.3R): " + str.tostring(tp2, format.mintick)
     
     label.new(bar_index, high, text=show_json_label ? alert_msg : txt, style=_style_sell, color=color.red, textcolor=color.white, size=_size, tooltip=tt)
