@@ -26,10 +26,14 @@ string sess_str  = input.string("0700-1600", "Session Hours (UTC)", group=group_
 string label_style_input = input.string("Small Arrow", "Signal Label Style", options=["Small Arrow", "Large Arrow", "Compact Box"], group=group_ui)
 string txt_a1            = input.string("FLOW", "Name for A1 Entry", group=group_ui, tooltip="Shallow pullback (21-50 EMA)")
 string txt_a2            = input.string("VALUE", "Name for A2 Entry", group=group_ui, tooltip="Deep pullback (50-200 EMA)")
+color  col_entry        = input.color(color.new(color.gray, 50), "Entry Line Color", group=group_ui)
+color  col_sl           = input.color(color.new(color.red, 50), "SL Line Color", group=group_ui)
+color  col_tp           = input.color(color.new(color.lime, 50), "TP Line Color", group=group_ui)
 
 // Risk Settings
 float atr_mult = input.float(1.5, "ATR Stop Multiplier", group=group_risk)
 float rr_ratio = input.float(2.0, "Risk:Reward Ratio", group=group_risk)
+int entry_buffer_pips = input.int(5, "Entry Tolerance (Pips)", group=group_risk, tooltip="If price is within this many pips of 21 EMA, use market close. Otherwise, use EMA as Limit.")
 
 // --- ATR BANDS (TheTrdFloor) SETTINGS ---
 group_atr = "ATR Bands (TheTrdFloor)"
@@ -175,16 +179,18 @@ string actual_s = mt5_symbol == "{{ticker}}" ? syminfo.ticker : mt5_symbol
 
 // Buy Execution
 if buy_a1 or buy_a2
-    float entry = close
+    float buffer = entry_buffer_pips * syminfo.mintick * 10
+    float entry  = close > (ema21 + buffer) ? (ema21 + buffer) : close
     sl_level := lowerATRBand_b
     float risk = entry - sl_level
     float tp1  = entry + (risk * 0.7)
     float tp2  = entry + (risk * 1.3)
     
-    // Draw SL & TP Dash Lines (2 bars forward)
-    line.new(bar_index, sl_level, bar_index + 2, sl_level, xloc=xloc.bar_index, color=color.new(color.red, 50), style=line.style_dashed, width=1)
-    line.new(bar_index, tp1, bar_index + 2, tp1, xloc=xloc.bar_index, color=color.new(color.lime, 50), style=line.style_dashed, width=1)
-    line.new(bar_index, tp2, bar_index + 2, tp2, xloc=xloc.bar_index, color=color.new(color.lime, 50), style=line.style_dashed, width=1)
+    // Draw Entry, SL & TP Dash Lines (2 bars forward)
+    line.new(bar_index, entry, bar_index + 2, entry, xloc=xloc.bar_index, color=col_entry, style=line.style_dashed, width=1)
+    line.new(bar_index, sl_level, bar_index + 2, sl_level, xloc=xloc.bar_index, color=col_sl, style=line.style_dashed, width=1)
+    line.new(bar_index, tp1, bar_index + 2, tp1, xloc=xloc.bar_index, color=col_tp, style=line.style_dashed, width=1)
+    line.new(bar_index, tp2, bar_index + 2, tp2, xloc=xloc.bar_index, color=col_tp, style=line.style_dashed, width=1)
     
     // Use User-Defined Names
     string txt = buy_a1 ? txt_a1 : txt_a2
@@ -202,16 +208,18 @@ if buy_a1 or buy_a2
 
 // Sell Execution
 if sell_a1 or sell_a2
-    float entry = close
+    float buffer = entry_buffer_pips * syminfo.mintick * 10
+    float entry  = close < (ema21 - buffer) ? (ema21 - buffer) : close
     sl_level := upperATRBand_b
     float risk = sl_level - entry
     float tp1  = entry - (risk * 0.7)
     float tp2  = entry - (risk * 1.3)
     
-    // Draw SL & TP Dash Lines (2 bars forward)
-    line.new(bar_index, sl_level, bar_index + 2, sl_level, xloc=xloc.bar_index, color=color.new(color.red, 50), style=line.style_dashed, width=1)
-    line.new(bar_index, tp1, bar_index + 2, tp1, xloc=xloc.bar_index, color=color.new(color.lime, 50), style=line.style_dashed, width=1)
-    line.new(bar_index, tp2, bar_index + 2, tp2, xloc=xloc.bar_index, color=color.new(color.lime, 50), style=line.style_dashed, width=1)
+    // Draw Entry, SL & TP Dash Lines (2 bars forward)
+    line.new(bar_index, entry, bar_index + 2, entry, xloc=xloc.bar_index, color=col_entry, style=line.style_dashed, width=1)
+    line.new(bar_index, sl_level, bar_index + 2, sl_level, xloc=xloc.bar_index, color=col_sl, style=line.style_dashed, width=1)
+    line.new(bar_index, tp1, bar_index + 2, tp1, xloc=xloc.bar_index, color=col_tp, style=line.style_dashed, width=1)
+    line.new(bar_index, tp2, bar_index + 2, tp2, xloc=xloc.bar_index, color=col_tp, style=line.style_dashed, width=1)
     
     // Use User-Defined Names
     string txt = sell_a1 ? txt_a1 : txt_a2
