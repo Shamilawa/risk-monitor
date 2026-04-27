@@ -1,0 +1,239 @@
+//@version=6
+indicator("Pro: Flow & Value (Custom Names)", overlay=true, max_labels_count=500)
+
+// -----------------------------------------------------------------------------
+// 1. SETUP & INPUTS
+// -----------------------------------------------------------------------------
+group_strat = "Strategy Definitions"
+group_filt  = "Filters & Confirmation"
+group_ui    = "Visuals / UI" 
+group_risk  = "Risk Management"
+
+// Moving Averages
+int len_fast  = input.int(21, "Fast EMA (Flow Zone)", group=group_strat)
+int len_slow  = input.int(50, "Slow EMA (Value Zone)", group=group_strat)
+int len_trend = input.int(200, "Trend EMA (Trend Filter)", group=group_strat)
+
+// FILTERS
+bool use_vol       = input.bool(true, "Require Volume Confirmation?", group=group_filt)
+bool use_double_ha = input.bool(true, "Require Double HA Confirmation?", group=group_filt)
+
+// SESSION Filter
+bool use_session = input.bool(true, "Filter by Time Session?", group=group_filt)
+string sess_str  = input.string("0700-1600", "Session Hours (UTC)", group=group_filt)
+
+// UI SETTINGS (CUSTOM NAMES)
+string label_style_input = input.string("Small Arrow", "Signal Label Style", options=["Small Arrow", "Large Arrow", "Compact Box"], group=group_ui)
+string txt_a1            = input.string("FLOW", "Name for A1 Entry", group=group_ui, tooltip="Shallow pullback (21-50 EMA)")
+string txt_a2            = input.string("VALUE", "Name for A2 Entry", group=group_ui, tooltip="Deep pullback (50-200 EMA)")
+
+// Risk Settings
+float atr_mult = input.float(1.5, "ATR Stop Multiplier", group=group_risk)
+float rr_ratio = input.float(2.0, "Risk:Reward Ratio", group=group_risk)
+
+// --- ATR BANDS (TheTrdFloor) SETTINGS ---
+group_atr = "ATR Bands (TheTrdFloor)"
+group_atr_table = "ATR Bands Table"
+
+int   atrPeriod_b      = input.int(3, "ATR Period (Bands)", minval=1, group=group_atr, tooltip="ATR value calculation period for the bands.")
+float atrMultiplier_b  = input.float(2.5, "ATR Band Scale Factor", step=0.1, minval=0.01, group=group_atr, tooltip="Scaling factor for the ATR bands.")
+bool  showTPBands_b    = input.bool(false, "Show Take-Profit Bands", group=group_atr)
+float tpScaleFactor_b  = input.float(1.5, "TP Scale Factor (Bands)", minval=1, step=0.1, group=group_atr, tooltip="Reward/Risk ratio for the TP bands.")
+
+bool   showTable_b         = input.bool(false, "Show ATR Data Table", group=group_atr_table)
+bool   alignTableVert_b    = input.bool(true, "Align Table Vertically", group=group_atr_table)
+string tablePos_b          = input.string("Bottom Right", "Table Location", options=["Top Right","Top Left","Top Center","Middle Right","Middle Left","Middle Center","Bottom Right","Bottom Left","Bottom Center"], group=group_atr_table)
+color  tableColor_b        = input.color(color.rgb(0, 175, 200, 20), "Table Border Color", group=group_atr_table)
+color  tableHeaderColor_b  = input.color(color.rgb(255, 255, 0, 0), "Table Header Text", group=group_atr_table)
+color  tableTextColor_b    = input.color(color.white, "Table Text Color", group=group_atr_table)
+color  tableLongBG_b       = input.color(color.rgb(0, 255, 0, 90), "Long BG Color", group=group_atr_table)
+color  tableShortBG_b      = input.color(color.rgb(255, 0, 0, 80), "Short BG Color", group=group_atr_table)
+
+// -----------------------------------------------------------------------------
+// 2. INDICATOR CALCULATIONS
+// -----------------------------------------------------------------------------
+float ema21  = ta.ema(close, len_fast)
+float ema50  = ta.ema(close, len_slow)
+float ema200 = ta.ema(close, len_trend)
+float atr    = ta.atr(14)
+
+// --- ATR BANDS CALCULATIONS ---
+// Helper: Get source for bands
+f_getBandSource(isUpper) => isUpper ? close : close // Simplified to 'close' as per original script's final preference
+
+// Helper: Get table position
+f_getTablePos(pos) =>
+    switch pos
+        "Top Right"      => position.top_right
+        "Top Left"       => position.top_left
+        "Top Center"     => position.top_center
+        "Middle Right"   => position.middle_right
+        "Middle Left"    => position.middle_left
+        "Middle Center"  => position.middle_center
+        "Bottom Right"   => position.bottom_right
+        "Bottom Left"    => position.bottom_left
+        "Bottom Center"  => position.bottom_center
+        => position.bottom_right
+
+atr_b          = ta.atr(atrPeriod_b)
+scaledATR_b    = atr_b * atrMultiplier_b
+upperATRBand_b = f_getBandSource(true) + scaledATR_b
+lowerATRBand_b = f_getBandSource(false) - scaledATR_b
+
+scaledTPLong_b  = close + ((close - lowerATRBand_b) * tpScaleFactor_b)
+scaledTPShort_b = close - ((upperATRBand_b - close) * tpScaleFactor_b)
+
+// Heiken Ashi Logic
+string haTicker = ticker.heikinashi(syminfo.tickerid)
+[haOpen, haClose] = request.security(haTicker, timeframe.period, [open, close])
+bool haGreen = haClose > haOpen
+bool haRed   = haClose < haOpen
+
+// -----------------------------------------------------------------------------
+// 3. LOGIC ENGINE
+// -----------------------------------------------------------------------------
+// A. Global Trend
+bool trend_bull = close > ema200
+bool trend_bear = close < ema200
+
+// B. Filter Logic
+bool time_allowed = use_session ? not na(time(timeframe.period, sess_str + ":1234567")) : true
+bool vol_allowed  = use_vol ? (volume > ta.sma(volume, 20)) : true
+
+// HA Trigger Logic
+bool ha_long_valid  = use_double_ha ? (haGreen and haGreen[1]) : haGreen
+bool ha_short_valid = use_double_ha ? (haRed and haRed[1]) : haRed
+
+// C. Stack Logic
+bool a1_stack_bull = ema21 > ema50 and ema50 > ema200
+bool a1_stack_bear = ema21 < ema50 and ema50 < ema200
+bool a2_stack_bull = ema50 > ema200 
+bool a2_stack_bear = ema50 < ema200
+
+// D. Zone Touches
+bool touch_a1_bull = low <= ema21 and low >= ema50 
+bool touch_a1_bear = high >= ema21 and high <= ema50
+bool touch_a2_bull = low < ema50 and low >= ema200
+bool touch_a2_bear = high > ema50 and high <= ema200
+
+// -----------------------------------------------------------------------------
+// 4. SIGNAL GENERATION
+// -----------------------------------------------------------------------------
+var bool can_take_long = true
+var bool can_take_short = true
+
+// Re-Arming Logic
+if close > ema21
+    can_take_long := true
+if close < ema21
+    can_take_short := true
+
+// Master Trigger Conditions
+bool buy_a1 = a1_stack_bull and time_allowed and touch_a1_bull and ha_long_valid and vol_allowed and can_take_long
+bool buy_a2 = a2_stack_bull and time_allowed and touch_a2_bull and ha_long_valid and vol_allowed and can_take_long
+
+bool sell_a1 = a1_stack_bear and time_allowed and touch_a1_bear and ha_short_valid and vol_allowed and can_take_short
+bool sell_a2 = a2_stack_bear and time_allowed and touch_a2_bear and ha_short_valid and vol_allowed and can_take_short
+
+// -----------------------------------------------------------------------------
+// 5. VISUAL STYLE LOGIC
+// -----------------------------------------------------------------------------
+string style_choice = label_style_input
+string _style_buy  = label.style_arrowup
+string _style_sell = label.style_arrowdown
+string _size       = size.small
+
+if style_choice == "Large Arrow"
+    _size := size.normal
+else if style_choice == "Compact Box"
+    _style_buy  := label.style_label_up
+    _style_sell := label.style_label_down
+    _size       := size.small
+
+// -----------------------------------------------------------------------------
+// 6. EXECUTION & PLOTTING
+// -----------------------------------------------------------------------------
+plot(ema200, "Trend 200", color.white, 2)
+plot(ema21,  "Fast 21", color.new(color.green, 30))
+plot(ema50,  "Slow 50", color.new(color.red, 30))
+fill(plot(ema21), plot(ema50), color=a1_stack_bull ? color.new(color.green, 90) : a1_stack_bear ? color.new(color.red, 90) : na, title="Flow Zone")
+
+var float sl_level = na
+var float tp_level = na
+var bool trade_active = false 
+
+// Buy Execution
+if buy_a1 or buy_a2
+    float entry = close
+    sl_level := low - (atr * atr_mult)
+    tp_level := entry + ((entry - sl_level) * rr_ratio)
+    
+    // Use User-Defined Names
+    string txt = buy_a1 ? txt_a1 : txt_a2
+    
+    label.new(bar_index, low, text=txt, style=_style_buy, color=color.green, textcolor=color.white, size=_size, tooltip="Buy " + txt + "\nSL: " + str.tostring(math.round(sl_level, 2)))
+    alert("Buy Signal (" + txt + ") Detected", alert.freq_once_per_bar)
+    
+    can_take_long := false 
+    trade_active  := true
+
+// Sell Execution
+if sell_a1 or sell_a2
+    float entry = close
+    sl_level := high + (atr * atr_mult)
+    tp_level := entry - ((sl_level - entry) * rr_ratio)
+    
+    // Use User-Defined Names
+    string txt = sell_a1 ? txt_a1 : txt_a2
+    
+    label.new(bar_index, high, text=txt, style=_style_sell, color=color.red, textcolor=color.white, size=_size, tooltip="Sell " + txt + "\nSL: " + str.tostring(math.round(sl_level, 2)))
+    alert("Sell Signal (" + txt + ") Detected", alert.freq_once_per_bar)
+    
+    can_take_short := false
+    trade_active   := true
+
+// Live TP/SL Lines
+plot(trade_active ? sl_level : na, "SL", color.red, 1, plot.style_linebr)
+plot(trade_active ? tp_level : na, "TP", color.lime, 1, plot.style_linebr)
+
+// --- ATR BANDS PLOTTING ---
+plot(upperATRBand_b, "Upper ATR Band", color.new(color.green, 50), 2)
+plot(lowerATRBand_b, "Lower ATR Band", color.new(color.red, 50), 2)
+plot(showTPBands_b ? scaledTPLong_b : na, "Upper TP Band", color.new(color.white, 80), 1)
+plot(showTPBands_b ? scaledTPShort_b : na, "Lower TP Band", color.new(color.yellow, 80), 1)
+
+// Dashboard
+var table dash = table.new(position.bottom_right, 2, 4, bgcolor=color.new(color.black, 50))
+if barstate.islast
+    table.cell(dash, 0, 0, "Trend", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 0, trend_bull ? "BULLISH" : "BEARISH", text_color=trend_bull ? color.green : color.red, text_size=size.small)
+    
+    table.cell(dash, 0, 1, "Status", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 1, can_take_long or can_take_short ? "READY" : "LOCKED", text_color=can_take_long or can_take_short ? color.green : color.orange, text_size=size.small)
+
+// --- ATR BANDS DATA TABLE ---
+if showTable_b
+    var table atrTable = table.new(f_getTablePos(tablePos_b), 2, 8, border_width=1, frame_width=1, border_color=tableColor_b, frame_color=tableColor_b)
+    
+    if alignTableVert_b
+        // Vertical Headers
+        table.cell(atrTable, 0, 0, "Long Stop",   text_color=tableHeaderColor_b, bgcolor=tableLongBG_b)
+        table.cell(atrTable, 0, 1, "Long Dist",   text_color=tableHeaderColor_b, bgcolor=tableLongBG_b)
+        table.cell(atrTable, 0, 2, "Long TP",     text_color=tableHeaderColor_b, bgcolor=tableLongBG_b)
+        table.cell(atrTable, 0, 3, "Short Stop",  text_color=tableHeaderColor_b, bgcolor=tableShortBG_b)
+        table.cell(atrTable, 0, 4, "Short Dist",  text_color=tableHeaderColor_b, bgcolor=tableShortBG_b)
+        table.cell(atrTable, 0, 5, "Short TP",    text_color=tableHeaderColor_b, bgcolor=tableShortBG_b)
+        
+        // Data
+        table.cell(atrTable, 1, 0, str.tostring(lowerATRBand_b, format.mintick), text_color=tableTextColor_b, bgcolor=tableLongBG_b)
+        table.cell(atrTable, 1, 1, str.tostring(math.round_to_mintick(close - lowerATRBand_b)), text_color=tableTextColor_b, bgcolor=tableLongBG_b)
+        table.cell(atrTable, 1, 2, str.tostring(scaledTPLong_b, format.mintick), text_color=tableTextColor_b, bgcolor=tableLongBG_b)
+        table.cell(atrTable, 1, 3, str.tostring(upperATRBand_b, format.mintick), text_color=tableTextColor_b, bgcolor=tableShortBG_b)
+        table.cell(atrTable, 1, 4, str.tostring(math.round_to_mintick(upperATRBand_b - close)), text_color=tableTextColor_b, bgcolor=tableShortBG_b)
+        table.cell(atrTable, 1, 5, str.tostring(scaledTPShort_b, format.mintick), text_color=tableTextColor_b, bgcolor=tableShortBG_b)
+    else
+        // Horizontal Headers (Simplified)
+        table.cell(atrTable, 0, 0, "L-Stop", text_color=tableHeaderColor_b, bgcolor=tableLongBG_b)
+        table.cell(atrTable, 1, 0, str.tostring(lowerATRBand_b, format.mintick), text_color=tableTextColor_b, bgcolor=tableLongBG_b)
+        table.cell(atrTable, 0, 1, "S-Stop", text_color=tableHeaderColor_b, bgcolor=tableShortBG_b)
+        table.cell(atrTable, 1, 1, str.tostring(upperATRBand_b, format.mintick), text_color=tableTextColor_b, bgcolor=tableShortBG_b)
