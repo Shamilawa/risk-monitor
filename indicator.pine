@@ -15,11 +15,11 @@ int len_slow  = input.int(50, "Slow EMA (Value Zone)", group=group_strat)
 int len_trend = input.int(200, "Trend EMA (Trend Filter)", group=group_strat)
 
 // FILTERS
-bool use_vol       = input.bool(true, "Require Volume Confirmation?", group=group_filt)
+bool use_vol       = input.bool(false, "Require Volume Confirmation?", group=group_filt)
 bool use_double_ha = input.bool(true, "Require Double HA Confirmation?", group=group_filt)
 
 // SESSION Filter
-bool use_session = input.bool(true, "Filter by Time Session?", group=group_filt)
+bool use_session = input.bool(false, "Filter by Time Session?", group=group_filt)
 string sess_str  = input.string("0700-1600", "Session Hours (UTC)", group=group_filt)
 
 // UI SETTINGS (CUSTOM NAMES)
@@ -41,9 +41,9 @@ group_atr_table = "ATR Bands Table"
 group_auto = "Automation / Webhooks"
 
 mt5_symbol     = input.string("{{ticker}}", "MT5 Symbol Name", group=group_auto, tooltip="Use {{ticker}} for dynamic symbol or type your MT5 symbol (e.g., EURUSD.m)")
-risk_percent   = input.float(1.0, "Risk Per Trade (%)", minval=0.1, step=0.1, group=group_auto)
+risk_usd       = input.float(100.0, "Risk Amount ($)", minval=1.0, step=10.0, group=group_auto, tooltip="Dollar amount to risk per trade. Used by Python to dynamically calculate MT5 lot size.")
 use_json_alert = input.bool(true, "Send JSON Alerts (for MT5 Bridge)", group=group_auto)
-show_json_label = input.bool(false, "Copy Mode: Show JSON on Labels", group=group_auto, tooltip="When enabled, labels will display the raw JSON. Right-click the label -> Settings to copy the text.")
+show_csv_label = input.bool(false, "Copy Mode: Show CSV on Labels", group=group_auto, tooltip="When enabled, labels will display the raw CSV string for manual copying to MT5.")
 
 
 
@@ -178,7 +178,7 @@ var bool trade_active = false
 string actual_s = mt5_symbol == "{{ticker}}" ? syminfo.ticker : mt5_symbol
 
 // Buy Execution
-if buy_a1 or buy_a2
+if (buy_a1 or buy_a2) and barstate.isconfirmed
     float buffer = entry_buffer_pips * syminfo.mintick * 10
     float entry  = close > (ema21 + buffer) ? (ema21 + buffer) : close
     sl_level := lowerATRBand_b
@@ -194,20 +194,26 @@ if buy_a1 or buy_a2
     
     // Use User-Defined Names
     string txt = buy_a1 ? txt_a1 : txt_a2
-    string alert_msg = "buy," + actual_s + "," + str.tostring(entry, format.mintick) + "," + str.tostring(risk_percent) + "," + str.tostring(sl_level, format.mintick) + "," + str.tostring(tp1, format.mintick) + "," + str.tostring(tp2, format.mintick)
+    
+    // CSV for manual copy-pasting
+    string csv_msg = "buy," + actual_s + "," + str.tostring(entry, format.mintick) + "," + str.tostring(risk_usd) + "," + str.tostring(sl_level, format.mintick) + "," + str.tostring(tp1, format.mintick) + "," + str.tostring(tp2, format.mintick)
+    
+    // JSON for automated webhook
+    string json_msg = '{"action": "buy", "symbol": "' + actual_s + '", "entry": ' + str.tostring(entry) + ', "sl": ' + str.tostring(sl_level) + ', "tp1": ' + str.tostring(tp1) + ', "tp2": ' + str.tostring(tp2) + ', "risk_usd": ' + str.tostring(risk_usd) + '}'
+    
     string tt  = "Buy " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + "\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + "\nTP2 (1.3R): " + str.tostring(tp2, format.mintick)
     
-    label.new(bar_index, low, text=show_json_label ? alert_msg : txt, style=_style_buy, color=color.green, textcolor=color.white, size=_size, tooltip=tt)
+    label.new(bar_index, low, text=show_csv_label ? csv_msg : txt, style=_style_buy, color=color.green, textcolor=color.white, size=_size, tooltip=tt)
     
-    // Automation Alert (Compact JSON for Copy-Paste)
-    alert(alert_msg, alert.freq_once_per_bar)
-    log.info(alert_msg)
+    // Automation Alert (Sends JSON)
+    alert(json_msg, alert.freq_once_per_bar_close)
+    log.info(json_msg)
     
     can_take_long := false 
     trade_active  := true
 
 // Sell Execution
-if sell_a1 or sell_a2
+if (sell_a1 or sell_a2) and barstate.isconfirmed
     float buffer = entry_buffer_pips * syminfo.mintick * 10
     float entry  = close < (ema21 - buffer) ? (ema21 - buffer) : close
     sl_level := upperATRBand_b
@@ -223,14 +229,20 @@ if sell_a1 or sell_a2
     
     // Use User-Defined Names
     string txt = sell_a1 ? txt_a1 : txt_a2
-    string alert_msg = "sell," + actual_s + "," + str.tostring(entry, format.mintick) + "," + str.tostring(risk_percent) + "," + str.tostring(sl_level, format.mintick) + "," + str.tostring(tp1, format.mintick) + "," + str.tostring(tp2, format.mintick)
+    
+    // CSV for manual copy-pasting
+    string csv_msg = "sell," + actual_s + "," + str.tostring(entry, format.mintick) + "," + str.tostring(risk_usd) + "," + str.tostring(sl_level, format.mintick) + "," + str.tostring(tp1, format.mintick) + "," + str.tostring(tp2, format.mintick)
+    
+    // JSON for automated webhook
+    string json_msg = '{"action": "sell", "symbol": "' + actual_s + '", "entry": ' + str.tostring(entry) + ', "sl": ' + str.tostring(sl_level) + ', "tp1": ' + str.tostring(tp1) + ', "tp2": ' + str.tostring(tp2) + ', "risk_usd": ' + str.tostring(risk_usd) + '}'
+    
     string tt  = "Sell " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + "\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + "\nTP2 (1.3R): " + str.tostring(tp2, format.mintick)
     
-    label.new(bar_index, high, text=show_json_label ? alert_msg : txt, style=_style_sell, color=color.red, textcolor=color.white, size=_size, tooltip=tt)
+    label.new(bar_index, high, text=show_csv_label ? csv_msg : txt, style=_style_sell, color=color.red, textcolor=color.white, size=_size, tooltip=tt)
     
-    // Automation Alert (Compact JSON for Copy-Paste)
-    alert(alert_msg, alert.freq_once_per_bar)
-    log.info(alert_msg)
+    // Automation Alert (Sends JSON)
+    alert(json_msg, alert.freq_once_per_bar_close)
+    log.info(json_msg)
     
     can_take_short := false
     trade_active   := true
