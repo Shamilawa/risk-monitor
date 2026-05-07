@@ -126,6 +126,7 @@ werk_log.setLevel(logging.ERROR)
 @flask_app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.get_json(force=True)
+    logging.info(f"RAW JSON from TV: {data}")
     if not data:
         return jsonify({"error": "Invalid payload"}), 400
         
@@ -286,10 +287,10 @@ class App(ctk.CTk):
             entry = float(data.get('entry', 0))
         except:
             entry = 0.0
-        sl = data.get('sl', 0)
-        tp1 = data.get('tp1', 0)
-        tp2 = data.get('tp2', 0)
-        risk_usd = data.get('risk_usd', 100.0)
+        sl = float(data.get('sl', 0))
+        tp1 = float(data.get('tp1', 0))
+        tp2 = float(data.get('tp2', 0))
+        risk_usd = float(data.get('risk_usd', 100.0))
         
         calculated_volume = calculate_volume(symbol, entry, sl, risk_usd)
         symbol_info = mt5.symbol_info(symbol)
@@ -302,7 +303,12 @@ class App(ctk.CTk):
         vol2 = round(vol2, 2)
         
         split_trade = False
-        if calculated_volume >= (min_vol * 2) and tp2 != 0:
+        split_reason = ""
+        if tp2 == 0:
+            split_reason = "No TP2 provided."
+        elif calculated_volume < (min_vol * 2):
+            split_reason = f"Calculated volume ({calculated_volume}) is too small to split (Minimum required: {min_vol * 2})."
+        else:
             split_trade = True
             
         logging.info(f"Signal received for {symbol}. Waiting for confirmation...")
@@ -342,6 +348,9 @@ class App(ctk.CTk):
         
         if split_trade:
             split_lbl = ctk.CTkLabel(popup, text=f"Will execute TWO trades:\nTrade 1: {vol1} Lots (TP1)  |  Trade 2: {vol2} Lots (TP2)", text_color="#f39c12", font=ctk.CTkFont(size=12, weight="bold"))
+            split_lbl.pack(pady=5)
+        else:
+            split_lbl = ctk.CTkLabel(popup, text=f"Will execute ONE trade (TP1 only)\nReason: {split_reason}", text_color="#f39c12", font=ctk.CTkFont(size=12, weight="bold"))
             split_lbl.pack(pady=5)
             
         # Buttons

@@ -150,10 +150,10 @@ def handle_signal_in_background(data):
             entry = float(data.get('entry', 0))
         except:
             entry = 0.0
-        sl = data.get('sl', 0)
-        tp1 = data.get('tp1', 0)
-        tp2 = data.get('tp2', 0)
-        risk_usd = data.get('risk_usd', 100.0) 
+        sl = float(data.get('sl', 0))
+        tp1 = float(data.get('tp1', 0))
+        tp2 = float(data.get('tp2', 0))
+        risk_usd = float(data.get('risk_usd', 100.0))
         
         # Calculate Lot Size Dynamically
         calculated_volume = calculate_volume(symbol, entry, sl, risk_usd)
@@ -172,7 +172,12 @@ def handle_signal_in_background(data):
         vol2 = round(vol2, 2)
         
         split_trade = False
-        if calculated_volume >= (min_vol * 2) and tp2 != 0:
+        split_reason = ""
+        if tp2 == 0:
+            split_reason = "No TP2 provided."
+        elif calculated_volume < (min_vol * 2):
+            split_reason = f"Calculated volume ({calculated_volume}) is too small to split (Minimum required: {min_vol * 2})."
+        else:
             split_trade = True
         
         # Prepare the message for the user
@@ -195,7 +200,8 @@ def handle_signal_in_background(data):
             msg += f"- Trade 1: {vol1} Lots targeting TP1\n"
             msg += f"- Trade 2: {vol2} Lots targeting TP2\n\n"
         else:
-            msg += f"Will execute ONE trade: {calculated_volume} Lots targeting TP1\n\n"
+            msg += f"Will execute ONE trade: {calculated_volume} Lots targeting TP1\n"
+            msg += f"(Trade not split because: {split_reason})\n\n"
             
         msg += f"Do you want to execute this now?"
         
@@ -222,6 +228,9 @@ def webhook():
     """
     # force=True allows Flask to parse JSON even if TradingView sends it as text/plain
     data = request.get_json(force=True)
+    logging.info(f"=== RAW JSON RECEIVED FROM TRADINGVIEW ===")
+    logging.info(data)
+    logging.info(f"==========================================")
     
     if not data:
         return jsonify({"error": "Invalid payload"}), 400
