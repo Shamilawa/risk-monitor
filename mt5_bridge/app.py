@@ -5,6 +5,11 @@ import ctypes
 import threading
 import winsound
 import logging
+import os
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -60,6 +65,32 @@ def show_confirmation(title, message):
     # 4 = MB_YESNO, 32 = MB_ICONQUESTION, 4096 = MB_SYSTEMMODAL (stays on top)
     result = ctypes.windll.user32.MessageBoxW(0, message, title, 4 | 32 | 4096)
     return result == 6 # 6 is IDYES
+
+def send_telegram_message(message):
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    
+    if not bot_token or not chat_id or chat_id == "YOUR_CHAT_ID_HERE":
+        logging.warning("Telegram credentials not fully set in .env. Skipping Telegram notification.")
+        return False
+        
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message
+    }
+    
+    try:
+        response = requests.post(url, json=payload, timeout=5)
+        if response.status_code == 200:
+            logging.info("Telegram message sent successfully.")
+            return True
+        else:
+            logging.error(f"Failed to send Telegram message: {response.text}")
+            return False
+    except Exception as e:
+        logging.error(f"Exception while sending Telegram message: {e}")
+        return False
 
 def execute_trade(symbol, action_type, sl, tp, volume, entry_price):
     """
@@ -207,6 +238,9 @@ def handle_signal_in_background(data):
         
         logging.info(f"Signal received for {symbol}. Waiting for user confirmation...")
         
+        # Send Telegram Notification
+        send_telegram_message(msg)
+        
         # Show Popup
         if show_confirmation("MT5 Trade Confirmation", msg):
             logging.info("User clicked YES. Executing trade...")
@@ -244,4 +278,5 @@ def webhook():
 if __name__ == '__main__':
     logging.info("Starting MT5 Bridge Server on port 5000...")
     logging.info("Waiting for TradingView webhooks...")
+    send_telegram_message("✅ MT5 Bridge Server Started & Telegram Connected!")
     app.run(host='0.0.0.0', port=5000)

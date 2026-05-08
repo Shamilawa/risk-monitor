@@ -8,6 +8,11 @@ import urllib.request
 import json
 import MetaTrader5 as mt5
 from flask import Flask, request, jsonify
+import os
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- CONFIGURATION ---
 ctk.set_appearance_mode("dark")
@@ -118,6 +123,32 @@ def execute_trade(symbol, action_type, sl, tp, volume, entry_price):
     logging.info(f"Trade Executed Successfully! Ticket: {result.order}")
     return True
 
+def send_telegram_message(message):
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    
+    if not bot_token or not chat_id or chat_id == "YOUR_CHAT_ID_HERE":
+        logging.warning("Telegram credentials not fully set in .env. Skipping Telegram notification.")
+        return False
+        
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message
+    }
+    
+    try:
+        response = requests.post(url, json=payload, timeout=5)
+        if response.status_code == 200:
+            logging.info("Telegram message sent successfully.")
+            return True
+        else:
+            logging.error(f"Failed to send Telegram message: {response.text}")
+            return False
+    except Exception as e:
+        logging.error(f"Exception while sending Telegram message: {e}")
+        return False
+
 # --- FLASK APP ---
 flask_app = Flask(__name__)
 werk_log = logging.getLogger('werkzeug')
@@ -209,6 +240,9 @@ class App(ctk.CTk):
         self.flask_thread = threading.Thread(target=run_flask, daemon=True)
         self.flask_thread.start()
         logging.info("Flask Webhook Server listening on port 5000...")
+        
+        # Test Telegram Connection
+        send_telegram_message("✅ MT5 Bridge GUI Started & Telegram Connected!")
         
         # Setup Ngrok
         self.ngrok_process = None
@@ -312,6 +346,33 @@ class App(ctk.CTk):
             split_trade = True
             
         logging.info(f"Signal received for {symbol}. Waiting for confirmation...")
+        
+        # Build message and send Telegram notification
+        msg = f"NEW TRADINGVIEW SIGNAL\n\n"
+        msg += f"Symbol: {symbol}\n"
+        msg += f"Action: {action}\n"
+        if entry > 0:
+            msg += f"Entry Level: {entry} (Will place Limit/Stop Order)\n"
+        else:
+            msg += f"Entry Level: Market\n"
+        msg += f"Stop Loss: {sl}\n"
+        msg += f"Take Profit 1: {tp1}\n"
+        if tp2 != 0:
+            msg += f"Take Profit 2: {tp2}\n"
+        msg += f"Risk Amount: ${risk_usd}\n"
+        msg += f"Total Lot Size: {calculated_volume} Lots\n\n"
+        
+        if split_trade:
+            msg += f"Will execute TWO trades:\n"
+            msg += f"- Trade 1: {vol1} Lots targeting TP1\n"
+            msg += f"- Trade 2: {vol2} Lots targeting TP2\n\n"
+        else:
+            msg += f"Will execute ONE trade: {calculated_volume} Lots targeting TP1\n"
+            msg += f"(Trade not split because: {split_reason})\n\n"
+            
+        msg += f"Do you want to execute this now?"
+        
+        send_telegram_message(msg)
         
         # Popup Window
         popup = ctk.CTkToplevel(self)
