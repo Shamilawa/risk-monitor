@@ -1,3 +1,3 @@
 @echo off
-start pythonw app_gui.py
+start python app_server.py
 exit

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visual Trading Console</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+    <div class="app-container">
+        <!-- Condensed Control Bar -->
+        <header class="toolbar">
+            <div class="toolbar-left">
+                <span class="app-title">Visual Trading Console for MetaTrader</span>
+                <button id="theme-toggle" class="btn-toolbar">Toggle Dark Mode</button>
+            </div>
+            
+            <div class="toolbar-right">
+                <div class="status-indicator">
+                    <span id="mt5-status-icon" class="status-icon offline"></span>
+                    <span id="mt5-status-text">MT5 Offline</span>
+                </div>
+                
+                <div class="webhook-group">
+                    <label for="webhook-url">Webhook:</label>
+                    <input type="text" id="webhook-url" value="Starting Ngrok..." readonly>
+                    <button id="copy-btn" class="btn-toolbar">Copy</button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Workspace -->
+        <div class="workspace">
+            
+            <!-- Dense Data Grid (Tracker) -->
+            <section class="grid-section">
+                <div class="section-toolbar" style="display: flex; justify-content: space-between; align-items: center; padding-right: 4px;">
+                    <div style="display: flex;">
+                        <span class="tab active">Market Orders</span>
+                    </div>
+                    <div class="filter-group" style="display: flex; gap: 2px; align-items: center;">
+                        <span style="font-size: 10px; color: var(--text-muted); margin-right: 4px;">Filter:</span>
+                        <button class="btn-filter active" data-filter="all">All</button>
+                        <button class="btn-filter" data-filter="active">Active</button>
+                        <button class="btn-filter" data-filter="pending">Pending</button>
+                    </div>
+                </div>
+                
+                <div class="table-container">
+                    <table id="tracker-table" class="data-grid">
+                        <thead>
+                            <tr>
+                                <th style="width: 25%;">Symbol / Group</th>
+                                <th style="width: 15%;">Ticket</th>
+                                <th style="width: 20%;">Trade Type</th>
+                                <th style="width: 40%;">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tracker-tbody">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Logs Section -->
+            <section class="logs-section">
+                <div class="section-toolbar">
+                    <span class="tab active">Event Log</span>
+                </div>
+                <div class="log-container" id="log-box">
+                    <!-- Logs populated by JS -->
+                </div>
+            </section>
+
+        </div>
+    </div>
+
+    <!-- Trade Confirmation Modal (Enterprise Style) -->
+    <div id="trade-modal" class="modal-overlay">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="modal-title">Trade Confirmation Request</span>
+            </div>
+            <div class="modal-body">
+                <div class="action-banner" id="modal-action-symbol">BUY EURUSD</div>
+                
+                <table class="details-table" id="modal-info-grid">
+                    <!-- Info rows injected here -->
+                </table>
+                
+                <div class="split-info" id="modal-split-info">
+                    <!-- Split message injected here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="btn-execute" class="btn btn-action execute">Execute</button>
+                <button id="btn-abort" class="btn btn-action abort">Abort</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/main.js"></script>
+</body>
+</html>
