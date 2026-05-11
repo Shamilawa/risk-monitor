@@ -8,6 +8,8 @@ import logging
 import os
 import requests
 from dotenv import load_dotenv
+import sqlite3
+import random
 
 load_dotenv()
 
@@ -54,6 +56,136 @@ def calculate_volume(symbol, entry_price, sl_price, risk_usd):
     
     return round(volume, 2)
 
+def init_db():
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS trade_groups (
+            magic_number INTEGER PRIMARY KEY,
+            symbol TEXT,
+            trade_1_ticket INTEGER,
+            trade_2_ticket INTEGER,
+            recovery_ticket INTEGER,
+            status TEXT
+        )
+    ''')
+    
+    # Safely add new columns if they don't exist
+    try:
+        c.execute('ALTER TABLE trade_groups ADD COLUMN rec_action TEXT')
+        c.execute('ALTER TABLE trade_groups ADD COLUMN rec_entry REAL')
+        c.execute('ALTER TABLE trade_groups ADD COLUMN rec_sl REAL')
+        c.execute('ALTER TABLE trade_groups ADD COLUMN rec_tp REAL')
+        c.execute('ALTER TABLE trade_groups ADD COLUMN rec_volume REAL')
+    except sqlite3.OperationalError:
+        pass
+        
+    conn.commit()
+    conn.close()
+
+def check_trade_group(group):
+    magic, symbol, t1_ticket, t2_ticket, rec_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status = group
+    
+    if status == 'PENDING_ORIGINAL':
+        pos = mt5.positions_get(ticket=t1_ticket)
+        if pos and len(pos) > 0:
+            # Original trade is filled! Place recovery trade.
+            logging.info(f"[Magic {magic}] Original trade filled! Placing Recovery Pending Order...")
+            new_rec_ticket = execute_trade(symbol, rec_action, rec_sl, rec_tp, rec_volume, rec_entry, magic, "Recovery")
+            
+            conn = sqlite3.connect('trades.db')
+            c = conn.cursor()
+            if new_rec_ticket:
+                c.execute("UPDATE trade_groups SET recovery_ticket = ?, status = 'ACTIVE' WHERE magic_number = ?", (new_rec_ticket, magic))
+                send_telegram_message(f"🔄 [Magic {magic}] Original {symbol} Trade Filled!\nPlacing Recovery {rec_action} Order at {rec_entry} (Ticket: {new_rec_ticket})")
+            else:
+                logging.error(f"[Magic {magic}] Failed to place Recovery Trade.")
+                send_telegram_message(f"⚠️ [Magic {magic}] Original {symbol} Trade Filled, but FAILED to place Recovery Trade!")
+                c.execute("UPDATE trade_groups SET status = 'ACTIVE' WHERE magic_number = ?", (magic,))
+            conn.commit()
+            conn.close()
+        else:
+            # Check if original pending order was cancelled or rejected
+            history_orders = mt5.history_orders_get(ticket=t1_ticket)
+            if history_orders and len(history_orders) > 0:
+                h_order = history_orders[0]
+                if h_order.state in (mt5.ORDER_STATE_CANCELED, mt5.ORDER_STATE_REJECTED):
+                    conn = sqlite3.connect('trades.db')
+                    c = conn.cursor()
+                    c.execute("UPDATE trade_groups SET status = 'CANCELLED' WHERE magic_number = ?", (magic,))
+                    conn.commit()
+                    conn.close()
+                    send_telegram_message(f"❌ [Magic {magic}] {symbol} Original Pending Order cancelled. Aborting recovery setup.")
+        return
+        
+    # For status == 'ACTIVE'
+    pos = mt5.positions_get(ticket=t1_ticket)
+    if pos and len(pos) > 0:
+        return # Still active position
+        
+    deals = mt5.history_deals_get(position=t1_ticket)
+    if deals and len(deals) > 0:
+        out_deals = [d for d in deals if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT)]
+        if len(out_deals) > 0:
+            out_deal = out_deals[-1] # take the latest closing deal
+            profit = out_deal.profit
+            if profit > 0:
+                # TP1 Hit
+                logging.info(f"[Magic {magic}] TP1 Hit for Original Trade. Cancelling Recovery...")
+                if rec_ticket:
+                    res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": rec_ticket})
+                    if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                        logging.info(f"[Magic {magic}] Recovery Trade {rec_ticket} cancelled.")
+                        send_telegram_message(f"✅ [Magic {magic}] {symbol} TP1 Hit!\nRecovery Trade (Ticket: {rec_ticket}) has been CANCELLED.")
+                    else:
+                        send_telegram_message(f"⚠️ [Magic {magic}] {symbol} TP1 Hit!\nWARNING: Failed to cancel Recovery Trade (Ticket: {rec_ticket}). Please cancel manually!")
+                else:
+                    send_telegram_message(f"✅ [Magic {magic}] {symbol} TP1 Hit!\n(No recovery trade to cancel)")
+                c.execute("UPDATE trade_groups SET status = 'SUCCESS_TP1_HIT' WHERE magic_number = ?", (magic,))
+            else:
+                # SL Hit
+                logging.info(f"[Magic {magic}] SL Hit for Original Trade. Recovery Triggered.")
+                send_telegram_message(f"🛑 [Magic {magic}] {symbol} SL Hit!\nRecovery Trade (Ticket: {rec_ticket}) has been TRIGGERED.")
+                c.execute("UPDATE trade_groups SET status = 'RECOVERY_TRIGGERED' WHERE magic_number = ?", (magic,))
+            conn.commit()
+    conn.close()
+
+def poller_thread():
+    while True:
+        try:
+            if not mt5.initialize():
+                time.sleep(5)
+                continue
+                
+            conn = sqlite3.connect('trades.db')
+            c = conn.cursor()
+            c.execute("SELECT magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status FROM trade_groups WHERE status IN ('ACTIVE', 'PENDING_ORIGINAL')")
+            active_groups = c.fetchall()
+            conn.close()
+            
+            for group in active_groups:
+                check_trade_group(group)
+                
+        except Exception as e:
+            logging.error(f"Poller thread error: {e}")
+        time.sleep(3)
+
+def reconcile_on_boot():
+    init_db()
+    logging.info("Running reconciliation flow on boot...")
+    if not mt5.initialize():
+        logging.error("MT5 init failed during reconciliation.")
+        return
+        
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    c.execute("SELECT magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status FROM trade_groups WHERE status IN ('ACTIVE', 'PENDING_ORIGINAL')")
+    active_groups = c.fetchall()
+    conn.close()
+    
+    for group in active_groups:
+        check_trade_group(group)
+
 def show_confirmation(title, message):
     """
     Shows a native Windows Yes/No dialog that stays on top of all other windows.
@@ -92,18 +224,18 @@ def send_telegram_message(message):
         logging.error(f"Exception while sending Telegram message: {e}")
         return False
 
-def execute_trade(symbol, action_type, sl, tp, volume, entry_price):
+def execute_trade(symbol, action_type, sl, tp, volume, entry_price, magic=999111, comment="TradingView Signal"):
     """
     Connects to MT5 and executes the trade (Market or Pending).
     """
     if not mt5.initialize():
         logging.error(f"MT5 initialization failed: {mt5.last_error()}")
-        return False
+        return None
         
     tick = mt5.symbol_info_tick(symbol)
     if tick is None:
         logging.error(f"Failed to get tick for {symbol}")
-        return False
+        return None
 
     ask = tick.ask
     bid = tick.bid
@@ -133,7 +265,7 @@ def execute_trade(symbol, action_type, sl, tp, volume, entry_price):
             price = bid
     else:
         logging.error(f"Unknown action type: {action_type}")
-        return False
+        return None
         
     is_pending = order_type in [mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_SELL_LIMIT, mt5.ORDER_TYPE_SELL_STOP]
     action_req = mt5.TRADE_ACTION_PENDING if is_pending else mt5.TRADE_ACTION_DEAL
@@ -148,8 +280,8 @@ def execute_trade(symbol, action_type, sl, tp, volume, entry_price):
         "sl": float(sl),
         "tp": float(tp),
         "deviation": 20,
-        "magic": 999111,
-        "comment": "TradingView Signal",
+        "magic": magic,
+        "comment": comment,
         "type_time": mt5.ORDER_TIME_GTC,
     }
     
@@ -163,10 +295,10 @@ def execute_trade(symbol, action_type, sl, tp, volume, entry_price):
         logging.error(f"Order failed, retcode={result.retcode}")
         # Dictionary of common MT5 error codes
         logging.error(f"Error Description: {result.comment}")
-        return False
+        return None
         
     logging.info(f"Trade Executed Successfully! Ticket: {result.order}")
-    return True
+    return result.order
 
 def handle_signal_in_background(data):
     """
@@ -211,6 +343,22 @@ def handle_signal_in_background(data):
         else:
             split_trade = True
         
+        # Calculate Recovery Trade Prices
+        tick = mt5.symbol_info_tick(symbol)
+        actual_entry = entry if entry > 0 else (tick.ask if action == "BUY" else tick.bid)
+        
+        rec_action = "SELL" if action == "BUY" else "BUY"
+        rec_entry = sl
+        rec_sl = actual_entry
+        r_amount = abs(rec_entry - rec_sl)
+        
+        if rec_action == "BUY":
+            rec_tp = rec_entry + (r_amount * 0.5)
+        else:
+            rec_tp = rec_entry - (r_amount * 0.5)
+            
+        rec_volume = calculate_volume(symbol, rec_entry, rec_sl, risk_usd)
+        
         # Prepare the message for the user
         msg = f"NEW TRADINGVIEW SIGNAL\n\n"
         msg += f"Symbol: {symbol}\n"
@@ -234,6 +382,12 @@ def handle_signal_in_background(data):
             msg += f"Will execute ONE trade: {calculated_volume} Lots targeting TP1\n"
             msg += f"(Trade not split because: {split_reason})\n\n"
             
+        msg += f"Recovery Trade (Pending):\n"
+        msg += f"- Action: {rec_action}\n"
+        msg += f"- Entry: {rec_entry}\n"
+        msg += f"- SL: {rec_sl} | TP: {rec_tp}\n"
+        msg += f"- Volume: {rec_volume}\n\n"
+            
         msg += f"Do you want to execute this now?"
         
         logging.info(f"Signal received for {symbol}. Waiting for user confirmation...")
@@ -244,11 +398,28 @@ def handle_signal_in_background(data):
         # Show Popup
         if show_confirmation("MT5 Trade Confirmation", msg):
             logging.info("User clicked YES. Executing trade...")
+            magic_number = random.randint(100000, 999999)
+            t1_ticket = None
+            t2_ticket = None
+            rec_ticket = None
+            
             if split_trade:
-                execute_trade(symbol, action, sl, tp1, vol1, entry)
-                execute_trade(symbol, action, sl, tp2, vol2, entry)
+                t1_ticket = execute_trade(symbol, action, sl, tp1, vol1, entry, magic_number, "Orig_TP1")
+                t2_ticket = execute_trade(symbol, action, sl, tp2, vol2, entry, magic_number, "Orig_TP2")
             else:
-                execute_trade(symbol, action, sl, tp1, calculated_volume, entry)
+                t1_ticket = execute_trade(symbol, action, sl, tp1, calculated_volume, entry, magic_number, "Orig_TP1")
+                
+            if t1_ticket:
+                # Save to DB - don't place recovery trade yet, let poller handle it
+                conn = sqlite3.connect('trades.db')
+                c = conn.cursor()
+                c.execute('''
+                    INSERT INTO trade_groups (magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (magic_number, symbol, t1_ticket, t2_ticket, None, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, 'PENDING_ORIGINAL'))
+                conn.commit()
+                conn.close()
+                logging.info(f"Trade Group [Magic {magic_number}] saved to DB (Status: PENDING_ORIGINAL).")
         else:
             logging.info("User clicked NO. Trade aborted.")
             
@@ -277,6 +448,14 @@ def webhook():
 
 if __name__ == '__main__':
     logging.info("Starting MT5 Bridge Server on port 5000...")
+    
+    # Initialize DB and run reconciliation
+    reconcile_on_boot()
+    
+    # Start poller thread
+    poll_thread = threading.Thread(target=poller_thread, daemon=True)
+    poll_thread.start()
+    
     logging.info("Waiting for TradingView webhooks...")
     send_telegram_message("✅ MT5 Bridge Server Started & Telegram Connected!")
     app.run(host='0.0.0.0', port=5000)
