@@ -164,13 +164,23 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Tab Buttons
-    const tabs = document.querySelectorAll('.section-toolbar .tab');
+    const tabs = document.querySelectorAll('.grid-section .section-toolbar .tab');
+    
     tabs.forEach(tab => {
         tab.addEventListener('click', () => {
             tabs.forEach(t => t.classList.remove('active'));
             tab.classList.add('active');
             currentTab = tab.getAttribute('data-tab');
+            
+            const filterGroup = document.querySelector('.grid-section .filter-group');
+            if (filterGroup) {
+                if (currentTab === 'history') {
+                    filterGroup.style.display = 'none';
+                } else {
+                    filterGroup.style.display = 'flex';
+                }
+            }
+            
             fetchTracker();
         });
     });
