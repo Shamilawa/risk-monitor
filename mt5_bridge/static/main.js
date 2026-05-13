@@ -136,15 +136,28 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    function getFriendlyStatus(status) {
+    function getFriendlyStatus(status, isGroup = false) {
         if (!status) return 'Unknown';
-        if (status === 'PENDING_ORIGINAL') return 'Waiting for Fill';
-        if (status === 'ACTIVE') return 'Live';
-        if (status === 'SUCCESS_TP1_HIT') return 'Target Hit';
-        if (status === 'RECOVERY_TRIGGERED') return 'In Recovery';
-        if (status === 'CANCELLED') return 'Cancelled';
-        if (status === 'PENDING (Placed)') return 'Recovery Placed';
-        return status; // fallback
+        
+        if (isGroup) {
+            if (status === 'PENDING_ORIGINAL') return 'Original Orders Pending';
+            if (status === 'ACTIVE') return 'Original Trades Live';
+            if (status === 'SUCCESS_TP1_HIT') return 'TP1 Hit (Complete)';
+            if (status === 'RECOVERY_TRIGGERED') return 'Recovery Mode Active';
+            if (status === 'RECOVERY_SUCCESS') return 'Recovery Successful';
+            if (status === 'RECOVERY_FAILED') return 'Recovery Failed';
+            if (status === 'CANCELLED') return 'Cancelled';
+            return status;
+        } else {
+            if (status === 'PENDING_ORIGINAL' || status === 'PENDING (Placed)') return 'Pending';
+            if (status === 'ACTIVE') return 'Live';
+            if (status === 'SUCCESS_TP1_HIT') return 'TP Hit';
+            if (status === 'RECOVERY_SUCCESS') return 'TP Hit';
+            if (status === 'RECOVERY_FAILED') return 'SL Hit';
+            if (status === 'SL_HIT') return 'SL Hit';
+            if (status === 'CANCELLED') return 'Cancelled';
+            return status;
+        }
     }
 
     function renderTrackerTable(rows) {
@@ -196,18 +209,24 @@ document.addEventListener('DOMContentLoaded', () => {
                             </td>
                             <td></td>
                             <td>Trade Group</td>
-                            <td><span class="badge-dense ${getBadgeClass(g.status)}">${getFriendlyStatus(g.status)}</span></td>
+                            <td><span class="badge-dense ${getBadgeClass(g.status)}">${getFriendlyStatus(g.status, true)}</span></td>
                         </tr>
                     `;
 
                     if (groupExpanded) {
+                        // Compute status for original child trades
+                        let childStatus = g.status;
+                        if (g.status === 'RECOVERY_TRIGGERED' || g.status === 'RECOVERY_SUCCESS' || g.status === 'RECOVERY_FAILED') {
+                            childStatus = 'SL_HIT';
+                        }
+
                         // Orig 1
                         trackerTbody.innerHTML += `
                             <tr>
                                 <td class="indent-2">Orig 1 (TP1)</td>
                                 <td>${g.trade_1_ticket || 'N/A'}</td>
                                 <td>Original</td>
-                                <td><span class="badge-dense ${getBadgeClass(g.status)}">${getFriendlyStatus(g.status)}</span></td>
+                                <td><span class="badge-dense ${getBadgeClass(childStatus)}">${getFriendlyStatus(childStatus, false)}</span></td>
                             </tr>
                         `;
 
@@ -218,7 +237,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     <td class="indent-2">Orig 2 (TP2)</td>
                                     <td>${g.trade_2_ticket}</td>
                                     <td>Original</td>
-                                    <td><span class="badge-dense ${getBadgeClass(g.status)}">${getFriendlyStatus(g.status)}</span></td>
+                                    <td><span class="badge-dense ${getBadgeClass(childStatus)}">${getFriendlyStatus(childStatus, false)}</span></td>
                                 </tr>
                             `;
                         }
@@ -235,7 +254,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <td class="indent-2">Recovery</td>
                                 <td>${g.recovery_ticket || 'N/A'}</td>
                                 <td>Recovery</td>
-                                <td><span class="badge-dense ${getBadgeClass(recStatus)}">${getFriendlyStatus(recStatus)}</span></td>
+                                <td><span class="badge-dense ${getBadgeClass(recStatus)}">${getFriendlyStatus(recStatus, false)}</span></td>
                             </tr>
                         `;
                     }
@@ -248,8 +267,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!status) return 'bdg-cancel';
         if (status === 'ACTIVE') return 'bdg-active';
         if (status.startsWith('PENDING')) return 'bdg-pending';
-        if (status === 'SUCCESS_TP1_HIT') return 'bdg-buy';
-        if (status === 'RECOVERY_TRIGGERED') return 'bdg-sell';
+        if (status === 'SUCCESS_TP1_HIT' || status === 'RECOVERY_SUCCESS') return 'bdg-buy';
+        if (status === 'RECOVERY_TRIGGERED' || status === 'RECOVERY_FAILED' || status === 'SL_HIT') return 'bdg-sell';
         if (status === 'CANCELLED') return 'bdg-cancel';
         return 'bdg-cancel';
     }
