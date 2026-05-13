@@ -802,7 +802,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const newInstancePath = document.getElementById('new-instance-path');
     const btnBrowsePath = document.getElementById('btn-browse-path');
     const newInstanceRisk = document.getElementById('new-instance-risk');
-    const newInstanceSuffix = document.getElementById('new-instance-suffix');
+    const newInstanceMapping = document.getElementById('new-instance-mapping');
 
     if (btnSettings) {
         btnSettings.addEventListener('click', () => {
@@ -814,6 +814,20 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnCloseSettings) {
         btnCloseSettings.addEventListener('click', () => {
             settingsModal.classList.remove('active');
+            
+            // Clear fields
+            if (newInstanceName) newInstanceName.value = '';
+            if (newInstancePath) newInstancePath.value = '';
+            if (newInstanceRisk) newInstanceRisk.value = '100';
+            if (newInstanceMapping) newInstanceMapping.value = '';
+            
+            // Reset button and heading in case it was in edit mode
+            if (btnAddInstance) {
+                btnAddInstance.innerText = "Add Instance";
+                btnAddInstance.removeAttribute('data-edit-id');
+            }
+            const heading = document.querySelector('#settings-modal h4');
+            if (heading) heading.innerText = "Add New Instance";
         });
     }
 
@@ -850,7 +864,10 @@ document.addEventListener('DOMContentLoaded', () => {
                             <strong>${inst.name}</strong> <span style="font-size: 11px; color: #10b981; margin-left: 5px;">$${inst.risk_usd || 100} Risk</span> ${inst.symbol_suffix ? `<span style="font-size: 11px; color: #64b5f6; margin-left: 5px;">(${inst.symbol_suffix} Suffix)</span>` : ''}<br>
                             <span style="font-size: 10px; color: var(--text-muted);">${inst.path}</span>
                         </div>
-                        <button class="btn-toolbar btn-delete-inst" data-id="${inst.id}" style="color: #fca5a5; border-color: #7f1d1d;">Remove</button>
+                        <div style="display: flex; gap: 5px;">
+                            <button class="btn-toolbar btn-edit-inst" data-id="${inst.id}" style="color: #64b5f6; border-color: #1e3a8a;">Edit</button>
+                            <button class="btn-toolbar btn-delete-inst" data-id="${inst.id}" style="color: #fca5a5; border-color: #7f1d1d;">Remove</button>
+                        </div>
                     `;
                     instanceList.appendChild(div);
                 });
@@ -866,6 +883,32 @@ document.addEventListener('DOMContentLoaded', () => {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ id: id })
                 }).then(() => fetchInstances());
+            } else if (e.target.classList.contains('btn-edit-inst')) {
+                const id = e.target.getAttribute('data-id');
+                fetch('/api/instances')
+                    .then(res => res.json())
+                    .then(data => {
+                        const inst = data.find(i => i.id == id);
+                        if (inst) {
+                            newInstanceName.value = inst.name;
+                            newInstancePath.value = inst.path;
+                            newInstanceRisk.value = inst.risk_usd || 100;
+                            
+                            let mappingStr = '';
+                            if (inst.symbol_mapping) {
+                                try {
+                                    const mapping = JSON.parse(inst.symbol_mapping);
+                                    mappingStr = Object.entries(mapping).map(([k, v]) => `${k}:${v}`).join(',');
+                                } catch(e) {}
+                            }
+                            newInstanceMapping.value = mappingStr;
+                            
+                            btnAddInstance.innerText = "Save Changes";
+                            btnAddInstance.setAttribute('data-edit-id', id);
+                            const heading = document.querySelector('#settings-modal h4');
+                            if (heading) heading.innerText = "Edit Instance";
+                        }
+                    });
             }
         });
     }
@@ -875,17 +918,41 @@ document.addEventListener('DOMContentLoaded', () => {
             const name = newInstanceName.value;
             const path = newInstancePath.value;
             const risk_usd = parseFloat(newInstanceRisk.value || 100);
-            const symbol_suffix = newInstanceSuffix ? newInstanceSuffix.value : '';
+            
+            const mappingStr = newInstanceMapping ? newInstanceMapping.value : '';
+            const mapping = {};
+            if (mappingStr) {
+                mappingStr.split(',').forEach(pair => {
+                    const [key, value] = pair.split(':');
+                    if (key && value) {
+                        mapping[key.trim()] = value.trim();
+                    }
+                });
+            }
+            const symbol_mapping = JSON.stringify(mapping);
+
             if (!name || !path) { alert("Please enter name and path"); return; }
+            
+            const editId = btnAddInstance.getAttribute('data-edit-id');
+            const method = editId ? 'PUT' : 'POST';
+            const payload = { name, path, risk_usd, symbol_mapping };
+            if (editId) payload.id = editId;
+
             fetch('/api/instances', {
-                method: 'POST',
+                method: method,
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, path, risk_usd, symbol_suffix })
+                body: JSON.stringify(payload)
             }).then(() => {
                 newInstanceName.value = '';
                 newInstancePath.value = '';
                 if (newInstanceRisk) newInstanceRisk.value = '100';
-                if (newInstanceSuffix) newInstanceSuffix.value = '';
+                if (newInstanceMapping) newInstanceMapping.value = '';
+                
+                btnAddInstance.innerText = "Add Instance";
+                btnAddInstance.removeAttribute('data-edit-id');
+                const heading = document.querySelector('#settings-modal h4');
+                if (heading) heading.innerText = "Add New Instance";
+                
                 fetchInstances();
             });
         });

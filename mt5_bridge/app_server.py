@@ -233,6 +233,11 @@ def init_db():
         c.execute("ALTER TABLE instances ADD COLUMN symbol_suffix TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
+        
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN symbol_mapping TEXT DEFAULT '{}'")
+    except sqlite3.OperationalError:
+        pass
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS trade_groups (
@@ -562,15 +567,15 @@ def stream():
             
     return Response(generate(), mimetype='text/event-stream')
 
-@flask_app.route('/api/instances', methods=['GET', 'POST', 'DELETE'])
+@flask_app.route('/api/instances', methods=['GET', 'POST', 'DELETE', 'PUT'])
 def api_instances():
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
     
     if request.method == 'GET':
-        c.execute("SELECT id, name, path, risk_usd, symbol_suffix FROM instances ORDER BY id ASC")
+        c.execute("SELECT id, name, path, risk_usd, symbol_mapping FROM instances ORDER BY id ASC")
         rows = c.fetchall()
-        instances = [{"id": r[0], "name": r[1], "path": r[2], "risk_usd": r[3], "symbol_suffix": r[4]} for r in rows]
+        instances = [{"id": r[0], "name": r[1], "path": r[2], "risk_usd": r[3], "symbol_mapping": r[4]} for r in rows]
         conn.close()
         return jsonify(instances)
         
@@ -579,16 +584,33 @@ def api_instances():
         name = data.get('name')
         path = data.get('path')
         risk_usd = float(data.get('risk_usd', 100.0))
-        symbol_suffix = data.get('symbol_suffix', '')
+        symbol_mapping = data.get('symbol_mapping', '{}')
         if not name or not path:
             conn.close()
             return jsonify({"error": "Name and path required"}), 400
             
-        c.execute("INSERT INTO instances (name, path, risk_usd, symbol_suffix) VALUES (?, ?, ?, ?)", (name, path, risk_usd, symbol_suffix))
+        c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping) VALUES (?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping))
         conn.commit()
         new_id = c.lastrowid
         conn.close()
-        return jsonify({"id": new_id, "name": name, "path": path, "risk_usd": risk_usd, "symbol_suffix": symbol_suffix}), 201
+        return jsonify({"id": new_id, "name": name, "path": path, "risk_usd": risk_usd, "symbol_mapping": symbol_mapping}), 201
+        
+    elif request.method == 'PUT':
+        data = request.json
+        instance_id = data.get('id')
+        name = data.get('name')
+        path = data.get('path')
+        risk_usd = float(data.get('risk_usd', 100.0))
+        symbol_mapping = data.get('symbol_mapping', '{}')
+        
+        if not instance_id or not name or not path:
+            conn.close()
+            return jsonify({"error": "ID, name and path required"}), 400
+            
+        c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=? WHERE id=?", (name, path, risk_usd, symbol_mapping, instance_id))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success"}), 200
         
     elif request.method == 'DELETE':
         data = request.json
@@ -676,25 +698,34 @@ def process_signal(data):
     
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
-    c.execute("SELECT id, name, path, risk_usd, symbol_suffix FROM instances ORDER BY id ASC")
+    c.execute("SELECT id, name, path, risk_usd, symbol_mapping FROM instances ORDER BY id ASC")
     instances = c.fetchall()
     conn.close()
     
     if not instances:
-        instances = [(None, "Default", None, 100.0, "")]
+        instances = [(None, "Default", None, 100.0, "{}")]
         
     instance_executions = []
     
     for inst in instances:
-        inst_id, inst_name, inst_path, risk_usd, symbol_suffix = inst
+        inst_id, inst_name, inst_path, risk_usd, symbol_mapping = inst
         
-        calculated_volume = calculate_volume(symbol, entry, sl, risk_usd, inst_path, symbol_suffix)
+        # Apply symbol mapping if exists
+        actual_symbol = symbol
+        if symbol_mapping:
+            try:
+                import json
+                mapping = json.loads(symbol_mapping)
+                if symbol in mapping:
+                    actual_symbol = mapping[symbol]
+            except Exception as e:
+                logging.error(f"Error parsing symbol mapping for {inst_name}: {e}")
+                
+        calculated_volume = calculate_volume(actual_symbol, entry, sl, risk_usd, inst_path, "")
         
         step = 0.01
         min_vol = 0.01
         actual_entry = entry
-        
-        actual_symbol = symbol + symbol_suffix
         if mt5.initialize(path=inst_path):
             symbol_info = mt5.symbol_info(actual_symbol)
             if symbol_info:
@@ -728,14 +759,15 @@ def process_signal(data):
         else:
             rec_tp = rec_entry - (r_amount * 0.5)
             
-        rec_volume = calculate_volume(symbol, rec_entry, rec_sl, risk_usd, inst_path, symbol_suffix)
+        rec_volume = calculate_volume(actual_symbol, rec_entry, rec_sl, risk_usd, inst_path, "")
         
         instance_executions.append({
             "id": inst_id,
             "name": inst_name,
             "path": inst_path,
             "risk_usd": risk_usd,
-            "symbol_suffix": symbol_suffix,
+            "symbol_mapping": symbol_mapping,
+            "actual_symbol": actual_symbol,
             "calculated_volume": calculated_volume,
             "vol1": vol1,
             "vol2": vol2,
@@ -804,7 +836,7 @@ def api_execute_trade():
         inst_id = exec_data.get('id')
         inst_name = exec_data.get('name')
         inst_path = exec_data.get('path')
-        symbol_suffix = exec_data.get('symbol_suffix', '')
+        actual_symbol = exec_data.get('actual_symbol', symbol)
         vol1 = exec_data.get('vol1')
         vol2 = exec_data.get('vol2')
         split_trade = exec_data.get('split_trade')
@@ -819,10 +851,10 @@ def api_execute_trade():
         t2_ticket = None
         
         if split_trade:
-            t1_ticket = execute_trade(symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", symbol_suffix)
-            t2_ticket = execute_trade(symbol, action, sl, tp2, vol2, entry, inst_path, magic_number, "Orig_TP2", symbol_suffix)
+            t1_ticket = execute_trade(actual_symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", "")
+            t2_ticket = execute_trade(actual_symbol, action, sl, tp2, vol2, entry, inst_path, magic_number, "Orig_TP2", "")
         else:
-            t1_ticket = execute_trade(symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", symbol_suffix)
+            t1_ticket = execute_trade(actual_symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", "")
             
         status = 'PENDING_ORIGINAL' if t1_ticket else 'FAILED_EXECUTION'
         
@@ -857,7 +889,7 @@ def api_retry_trade():
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
     c.execute("""
-        SELECT t.magic_number, t.symbol, t.action, t.entry_price, t.sl, t.tp1, t.tp2, t.vol1, t.vol2, t.split_trade, i.path, i.symbol_suffix
+        SELECT t.magic_number, t.symbol, t.action, t.entry_price, t.sl, t.tp1, t.tp2, t.vol1, t.vol2, t.split_trade, i.path, i.symbol_mapping
         FROM trade_groups t
         LEFT JOIN instances i ON t.instance_id = i.id
         WHERE t.id = ? AND t.status = 'FAILED_EXECUTION'
@@ -868,16 +900,27 @@ def api_retry_trade():
         conn.close()
         return jsonify({"error": "Trade not found or not in failed state"}), 404
         
-    magic_number, symbol, action, entry, sl, tp1, tp2, vol1, vol2, split_trade, inst_path, symbol_suffix = row
+    magic_number, symbol, action, entry, sl, tp1, tp2, vol1, vol2, split_trade, inst_path, symbol_mapping = row
     
+    # Apply symbol mapping if exists
+    actual_symbol = symbol
+    if symbol_mapping:
+        try:
+            import json
+            mapping = json.loads(symbol_mapping)
+            if symbol in mapping:
+                actual_symbol = mapping[symbol]
+        except Exception as e:
+            logging.error(f"Error parsing symbol mapping for retry: {e}")
+            
     t1_ticket = None
     t2_ticket = None
     
     if split_trade:
-        t1_ticket = execute_trade(symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", symbol_suffix)
-        t2_ticket = execute_trade(symbol, action, sl, tp2, vol2, entry, inst_path, magic_number, "Orig_TP2", symbol_suffix)
+        t1_ticket = execute_trade(actual_symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", "")
+        t2_ticket = execute_trade(actual_symbol, action, sl, tp2, vol2, entry, inst_path, magic_number, "Orig_TP2", "")
     else:
-        t1_ticket = execute_trade(symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", symbol_suffix)
+        t1_ticket = execute_trade(actual_symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", "")
         
     if t1_ticket:
         c.execute("UPDATE trade_groups SET trade_1_ticket=?, trade_2_ticket=?, status='PENDING_ORIGINAL' WHERE id=?", 
