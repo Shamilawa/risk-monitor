@@ -230,6 +230,59 @@ def check_trade_group(group):
             conn.close()
             notify_clients("tracker_update", "update")
         else:
+            # Check for trade invalidation
+            orders = mt5.orders_get(ticket=t1_ticket)
+            if orders and len(orders) > 0:
+                order = orders[0]
+                sl = order.sl
+                tp = order.tp
+                order_type = order.type
+                
+                tick = mt5.symbol_info_tick(symbol)
+                if tick:
+                    current_price = tick.ask if order_type in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_BUY_STOP) else tick.bid
+                    
+                    invalid = False
+                    reason = ""
+                    
+                    # Condition 1: Hit SL without filling
+                    if order_type in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_BUY_STOP):
+                        if current_price <= sl and sl != 0:
+                            invalid = True
+                            reason = "Price reached SL without filling"
+                    elif order_type in (mt5.ORDER_TYPE_SELL_LIMIT, mt5.ORDER_TYPE_SELL_STOP):
+                        if current_price >= sl and sl != 0:
+                            invalid = True
+                            reason = "Price reached SL without filling"
+                            
+                    # Condition 2: Reach TP1 level without filling
+                    if not invalid:
+                        if order_type in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_BUY_STOP):
+                            if current_price >= tp and tp != 0:
+                                invalid = True
+                                reason = "Price reached TP1 without filling"
+                        elif order_type in (mt5.ORDER_TYPE_SELL_LIMIT, mt5.ORDER_TYPE_SELL_STOP):
+                            if current_price <= tp and tp != 0:
+                                invalid = True
+                                reason = "Price reached TP1 without filling"
+                                
+                    if invalid:
+                        logging.info(f"[Magic {magic}] {reason}. Cancelling pending orders...")
+                        mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": t1_ticket})
+                        if t2_ticket:
+                            mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": t2_ticket})
+                            
+                        conn = sqlite3.connect('trades.db')
+                        c = conn.cursor()
+                        c.execute("UPDATE trade_groups SET status = 'CANCELLED' WHERE magic_number = ?", (magic,))
+                        conn.commit()
+                        conn.close()
+                        
+                        send_telegram_message(f"❌ [Magic {magic}] {symbol} Pending Trade Invalidated: {reason}.")
+                        notify_clients("tracker_update", "update")
+                        return
+            
+            # Fallback check if cancelled
             history_orders = mt5.history_orders_get(ticket=t1_ticket)
             if history_orders and len(history_orders) > 0:
                 h_order = history_orders[0]

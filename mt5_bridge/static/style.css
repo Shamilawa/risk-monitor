@@ -218,11 +218,12 @@ body {
     text-overflow: ellipsis;
 }
 
-.data-grid tr:hover {
-    background-color: var(--bg-row-hover);
-}
 .data-grid tr:nth-child(even) {
     background-color: var(--bg-row-alt);
+}
+
+.data-grid tr:hover {
+    background-color: var(--bg-row-hover);
 }
 
 .tree-header {
