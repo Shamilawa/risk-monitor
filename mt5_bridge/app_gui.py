@@ -211,6 +211,33 @@ def check_trade_group(group):
                     send_telegram_message(f"❌ [Magic {magic}] {symbol} Original Pending Order cancelled. Aborting recovery setup.")
         return
         
+    if status == 'RECOVERY_TRIGGERED':
+        pos = mt5.positions_get(ticket=rec_ticket)
+        if pos and len(pos) > 0:
+            return
+            
+        deals = mt5.history_deals_get(position=rec_ticket)
+        if deals and len(deals) > 0:
+            out_deals = [d for d in deals if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT)]
+            if len(out_deals) > 0:
+                out_deal = out_deals[-1]
+                profit = out_deal.profit
+                
+                conn = sqlite3.connect('trades.db')
+                c = conn.cursor()
+                
+                if profit > 0:
+                    logging.info(f"[Magic {magic}] Recovery Trade Hit TP!")
+                    send_telegram_message(f"✅ [Magic {magic}] {symbol} Recovery Trade hit TP!")
+                    c.execute("UPDATE trade_groups SET status = 'RECOVERY_SUCCESS' WHERE magic_number = ?", (magic,))
+                else:
+                    logging.info(f"[Magic {magic}] Recovery Trade Hit SL!")
+                    send_telegram_message(f"🛑 [Magic {magic}] {symbol} Recovery Trade hit SL!")
+                    c.execute("UPDATE trade_groups SET status = 'RECOVERY_FAILED' WHERE magic_number = ?", (magic,))
+                conn.commit()
+                conn.close()
+        return
+
     pos = mt5.positions_get(ticket=t1_ticket)
     if pos and len(pos) > 0:
         return
@@ -253,7 +280,7 @@ def poller_thread():
                 
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
-            c.execute("SELECT magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status FROM trade_groups WHERE status IN ('ACTIVE', 'PENDING_ORIGINAL')")
+            c.execute("SELECT magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status FROM trade_groups WHERE status IN ('ACTIVE', 'PENDING_ORIGINAL', 'RECOVERY_TRIGGERED')")
             active_groups = c.fetchall()
             conn.close()
             
@@ -272,7 +299,7 @@ def reconcile_on_boot():
         
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
-    c.execute("SELECT magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status FROM trade_groups WHERE status IN ('ACTIVE', 'PENDING_ORIGINAL')")
+    c.execute("SELECT magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status FROM trade_groups WHERE status IN ('ACTIVE', 'PENDING_ORIGINAL', 'RECOVERY_TRIGGERED')")
     active_groups = c.fetchall()
     conn.close()
     
@@ -493,6 +520,10 @@ class App(ctk.CTk):
             return {"fg_color": "#4C1D95", "text_color": "#A78BFA"}
         elif status == "CANCELLED":
             return {"fg_color": "#3F3F46", "text_color": "#A1A1AA"}
+        elif status == "RECOVERY_SUCCESS":
+            return {"fg_color": "#064E3B", "text_color": "#34D399"}
+        elif status == "RECOVERY_FAILED":
+            return {"fg_color": "#7F1D1D", "text_color": "#FCA5A5"}
         return {"fg_color": "#3F3F46", "text_color": "#A1A1AA"}
         
     def update_tracker_table(self):
