@@ -14,6 +14,7 @@
             <div class="toolbar-left">
                 <span class="app-title">Visual Trading Console for MetaTrader</span>
                 <button id="theme-toggle" class="btn-toolbar">Toggle Dark Mode</button>
+                <button id="btn-settings" class="btn-toolbar">Settings</button>
             </div>
             
             <div class="toolbar-right">
@@ -52,10 +53,11 @@
                     <table id="tracker-table" class="data-grid">
                         <thead>
                             <tr>
-                                <th style="width: 25%;">Symbol / Group</th>
+                                <th style="width: 20%;">Symbol / Group</th>
+                                <th style="width: 15%;">Instance</th>
                                 <th style="width: 15%;">Ticket</th>
-                                <th style="width: 20%;">Trade Type</th>
-                                <th style="width: 40%;">Status</th>
+                                <th style="width: 15%;">Trade Type</th>
+                                <th style="width: 35%;">Status</th>
                             </tr>
                         </thead>
                         <tbody id="tracker-tbody">
@@ -98,6 +100,35 @@
             <div class="modal-footer">
                 <button id="btn-execute" class="btn btn-action execute">Execute</button>
                 <button id="btn-abort" class="btn btn-action abort">Abort</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal-overlay">
+        <div class="modal" style="width: 500px;">
+            <div class="modal-header">
+                <span class="modal-title">Configure MT5 Instances</span>
+                <button id="btn-close-settings" class="btn-toolbar" style="background: none; border: none; color: var(--text-main); cursor: pointer; font-size: 16px;">X</button>
+            </div>
+            <div class="modal-body">
+                <div class="instance-list" id="instance-list">
+                    <!-- Instances injected here -->
+                </div>
+                
+                <div style="margin-top: 15px; border-top: 1px solid var(--border-color); padding-top: 15px;">
+                    <h4 style="margin: 0 0 10px 0;">Add New Instance</h4>
+                    <div style="display: flex; gap: 8px; flex-direction: column;">
+                        <input type="text" id="new-instance-name" placeholder="Instance Name (e.g. Broker A)" style="padding: 6px; background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary);">
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="new-instance-path" placeholder="Path to terminal64.exe" style="flex: 1; padding: 6px; background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary);">
+                            <button id="btn-browse-path" class="btn-toolbar" style="padding: 6px 12px; background: var(--bg-secondary);">Browse...</button>
+                        </div>
+                        <input type="number" id="new-instance-risk" placeholder="Risk Amount ($)" value="100" style="padding: 6px; background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary);">
+                        <input type="text" id="new-instance-suffix" placeholder="Symbol Suffix (e.g. #, .pro)" style="padding: 6px; background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary);">
+                        <button id="btn-add-instance" class="btn btn-action execute" style="margin-top: 5px;">Add Instance</button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

@@ -3,12 +3,12 @@ import json
 
 url = 'http://127.0.0.1:5000/webhook'
 data = {
-    "action": "buy",
+    "action": "sell",
     "symbol": "EURUSD",
-    "entry": 1.17395,
-    "sl": 1.17250,
-    "tp1": 1.17496,
-    "tp2":1.17584,
+    "entry": 1.17164,
+    "sl": 1.17312,
+    "tp1": 1.17060,
+    "tp2":1.16972,
     "risk_usd": 500.0
 }
 

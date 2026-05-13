@@ -62,13 +62,20 @@ document.addEventListener('DOMContentLoaded', () => {
     eventSource.addEventListener('tracker_update', (e) => { fetchTracker(); });
     
     eventSource.addEventListener('mt5_status', (e) => {
-        const isOnline = e.data === 'true';
-        if (isOnline) {
-            mt5StatusIcon.className = 'status-icon online';
-            mt5StatusText.innerText = 'MT5 Connected';
-        } else {
-            mt5StatusIcon.className = 'status-icon offline';
-            mt5StatusText.innerText = 'MT5 Offline';
+        try {
+            const status = JSON.parse(e.data);
+            if (status.online) {
+                mt5StatusIcon.className = 'status-icon online';
+            } else {
+                mt5StatusIcon.className = 'status-icon offline';
+            }
+            mt5StatusText.innerText = status.text;
+        } catch (err) {
+            console.error("Failed to parse mt5_status:", err);
+            // Fallback for old simple string if any
+            const isOnline = e.data === 'true';
+            mt5StatusIcon.className = isOnline ? 'status-icon online' : 'status-icon offline';
+            mt5StatusText.innerText = isOnline ? 'MT5 Connected' : 'MT5 Offline';
         }
     });
 
@@ -118,6 +125,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Attach click handler to table using event delegation
     trackerTbody.addEventListener('click', (e) => {
+        if (e.target.classList.contains('btn-retry')) {
+            const tradeId = e.target.getAttribute('data-id');
+            e.target.innerText = "Retrying...";
+            fetch('/api/retry_trade', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: tradeId })
+            }).then(res => res.json()).then(data => {
+                if(data.status !== 'success') {
+                    alert("Retry failed: " + (data.error || "Unknown"));
+                }
+                fetchTracker();
+            }).catch(err => {
+                alert("Retry error: " + err);
+                fetchTracker();
+            });
+            return;
+        }
+        
         const toggleRow = e.target.closest('.tree-toggle');
         if (toggleRow) {
             const nodeId = toggleRow.getAttribute('data-node-id');
@@ -169,6 +195,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (status === 'RECOVERY_FAILED') return 'SL Hit';
             if (status === 'SL_HIT') return 'SL Hit';
             if (status === 'CANCELLED') return 'Cancelled';
+            if (status === 'FAILED_EXECUTION') return 'Failed to Execute';
             return status;
         }
     }
@@ -180,7 +207,7 @@ document.addEventListener('DOMContentLoaded', () => {
             trackerThead.innerHTML = `
                 <tr>
                     <th style="width: 15%;">Symbol</th>
-                    <th style="width: 20%;">Group</th>
+                    <th style="width: 20%;">Instance</th>
                     <th style="width: 15%;">Ticket</th>
                     <th style="width: 20%;">Trade Type</th>
                     <th style="width: 30%;">Status</th>
@@ -189,10 +216,11 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             trackerThead.innerHTML = `
                 <tr>
-                    <th style="width: 25%;">Symbol / Group</th>
+                    <th style="width: 20%;">Symbol / Group</th>
+                    <th style="width: 15%;">Instance</th>
                     <th style="width: 15%;">Ticket</th>
-                    <th style="width: 20%;">Trade Type</th>
-                    <th style="width: 40%;">Status</th>
+                    <th style="width: 15%;">Trade Type</th>
+                    <th style="width: 35%;">Status</th>
                 </tr>
             `;
         }
@@ -225,7 +253,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Group Header (Symbol)
                 trackerTbody.innerHTML += `
                     <tr class="tree-header tree-toggle" data-node-id="${symNodeId}">
-                        <td colspan="4">
+                        <td colspan="5">
                             <span class="toggle-icon ${symExpanded ? '' : 'collapsed'}">▼</span>
                             <strong>${sym}</strong> <span style="font-size: 10px; color: var(--text-muted);">(${filteredGroups.length} Groups)</span>
                         </td>
@@ -234,19 +262,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (symExpanded) {
                     filteredGroups.forEach(g => {
-                        const groupNodeId = `grp_${sym}_${g.magic_number}`;
+                        const groupNodeId = `grp_${g.id}`;
                         const groupExpanded = expandedState[groupNodeId] === true; // Default to false
                         
                         // Group Row
+                        let retryBtn = '';
+                        if (g.status === 'FAILED_EXECUTION') {
+                            retryBtn = `<button class="btn-toolbar btn-retry" data-id="${g.id}" style="padding: 2px 6px; font-size: 10px; margin-left: 5px;">Retry</button>`;
+                        }
+                        
                         trackerTbody.innerHTML += `
                             <tr class="tree-toggle" data-node-id="${groupNodeId}">
                                 <td class="indent-1">
                                     <span class="toggle-icon ${groupExpanded ? '' : 'collapsed'}">▼</span>
                                     Magic: ${g.magic_number}
                                 </td>
+                                <td>${g.instance_name}</td>
                                 <td></td>
                                 <td>Trade Group</td>
-                                <td><span class="badge-dense ${getBadgeClass(g.status)}">${getFriendlyStatus(g.status, true)}</span></td>
+                                <td><span class="badge-dense ${getBadgeClass(g.status)}">${getFriendlyStatus(g.status, true)}</span>${retryBtn}</td>
                             </tr>
                         `;
 
@@ -261,6 +295,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             trackerTbody.innerHTML += `
                                 <tr>
                                     <td class="indent-2">Orig 1 (TP1)</td>
+                                    <td></td>
                                     <td>${g.trade_1_ticket || 'N/A'}</td>
                                     <td>Original</td>
                                     <td><span class="badge-dense ${getBadgeClass(childStatus)}">${getFriendlyStatus(childStatus, false)}</span></td>
@@ -272,6 +307,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 trackerTbody.innerHTML += `
                                     <tr>
                                         <td class="indent-2">Orig 2 (TP2)</td>
+                                        <td></td>
                                         <td>${g.trade_2_ticket}</td>
                                         <td>Original</td>
                                         <td><span class="badge-dense ${getBadgeClass(childStatus)}">${getFriendlyStatus(childStatus, false)}</span></td>
@@ -289,6 +325,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             trackerTbody.innerHTML += `
                                 <tr>
                                     <td class="indent-2">Recovery</td>
+                                    <td></td>
                                     <td>${g.recovery_ticket || 'N/A'}</td>
                                     <td>Recovery</td>
                                     <td><span class="badge-dense ${getBadgeClass(recStatus)}">${getFriendlyStatus(recStatus, false)}</span></td>
@@ -310,7 +347,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <td>${g.symbol}</td>
                         <td class="indent-1">
                             <span class="toggle-icon ${groupExpanded ? '' : 'collapsed'}">▼</span>
-                            Magic: ${g.magic_number}
+                            Magic: ${g.magic_number} (${g.instance_name})
                         </td>
                         <td></td>
                         <td>Trade Group</td>
@@ -400,14 +437,21 @@ document.addEventListener('DOMContentLoaded', () => {
         addRow("Stop Loss", data.sl);
         addRow("Take Profit 1", data.tp1);
         if (data.tp2) addRow("Take Profit 2", data.tp2);
-        addRow("Risk Amount", `$${data.risk_usd}`);
-        addRow("Total Lot Size", `${data.calculated_volume} Lots`);
-        addRow("Recovery Trade", `${data.rec_action} @ ${data.rec_entry} (Vol: ${data.rec_volume})`);
 
-        if (data.split_trade) {
-            modalSplitInfo.innerHTML = `Split Execution: [1] ${data.vol1} Lots (TP1) &nbsp; [2] ${data.vol2} Lots (TP2)`;
-        } else {
-            modalSplitInfo.innerHTML = `Single Execution (TP1 only).<br><span style="font-size: 9px; font-weight: normal;">Reason: ${data.split_reason}</span>`;
+        modalSplitInfo.innerHTML = '';
+        if (data.instance_executions && data.instance_executions.length > 0) {
+            let html = '<div style="margin-top: 10px; font-weight: bold; color: var(--text-primary); border-bottom: 1px solid var(--border-color); padding-bottom: 4px; margin-bottom: 8px;">Executions per Instance:</div>';
+            data.instance_executions.forEach(exec => {
+                html += `<div style="margin-bottom: 8px;">`;
+                html += `<strong>${exec.name}</strong> <span style="font-size: 11px; color: var(--text-muted);">($${exec.risk_usd} Risk)</span><br>`;
+                if (exec.split_trade) {
+                    html += `<span style="font-size: 12px; color: var(--text-secondary);">Total: ${exec.calculated_volume} Lots &nbsp;&rarr;&nbsp; [1] ${exec.vol1} (TP1) &nbsp; [2] ${exec.vol2} (TP2)</span>`;
+                } else {
+                    html += `<span style="font-size: 12px; color: var(--text-secondary);">Total: ${exec.calculated_volume} Lots (Single) - ${exec.split_reason}</span>`;
+                }
+                html += `</div>`;
+            });
+            modalSplitInfo.innerHTML = html;
         }
 
         modalOverlay.classList.add('active');
@@ -437,4 +481,101 @@ document.addEventListener('DOMContentLoaded', () => {
             })
             .catch(err => console.error("Abort error:", err));
     });
+    
+    // --- Settings Modal Logic ---
+    const btnSettings = document.getElementById('btn-settings');
+    const settingsModal = document.getElementById('settings-modal');
+    const btnCloseSettings = document.getElementById('btn-close-settings');
+    const instanceList = document.getElementById('instance-list');
+    const btnAddInstance = document.getElementById('btn-add-instance');
+    const newInstanceName = document.getElementById('new-instance-name');
+    const newInstancePath = document.getElementById('new-instance-path');
+    const btnBrowsePath = document.getElementById('btn-browse-path');
+    const newInstanceRisk = document.getElementById('new-instance-risk');
+    const newInstanceSuffix = document.getElementById('new-instance-suffix');
+
+    if (btnSettings) {
+        btnSettings.addEventListener('click', () => {
+            settingsModal.classList.add('active');
+            fetchInstances();
+        });
+    }
+
+    if (btnCloseSettings) {
+        btnCloseSettings.addEventListener('click', () => {
+            settingsModal.classList.remove('active');
+        });
+    }
+
+    function fetchInstances() {
+        if (!instanceList) return;
+        fetch('/api/instances')
+            .then(res => res.json())
+            .then(data => {
+                instanceList.innerHTML = '';
+                if (data.length === 0) {
+                    instanceList.innerHTML = '<div style="color: var(--text-muted); font-size: 12px; padding: 10px;">No instances configured. Executing on default MT5.</div>';
+                    return;
+                }
+                data.forEach(inst => {
+                    const div = document.createElement('div');
+                    div.style = 'display: flex; justify-content: space-between; align-items: center; padding: 8px; background: var(--bg-secondary); border: 1px solid var(--border-color); margin-bottom: 5px;';
+                    div.innerHTML = `
+                        <div>
+                            <strong>${inst.name}</strong> <span style="font-size: 11px; color: #10b981; margin-left: 5px;">$${inst.risk_usd || 100} Risk</span> ${inst.symbol_suffix ? `<span style="font-size: 11px; color: #64b5f6; margin-left: 5px;">(${inst.symbol_suffix} Suffix)</span>` : ''}<br>
+                            <span style="font-size: 10px; color: var(--text-muted);">${inst.path}</span>
+                        </div>
+                        <button class="btn-toolbar btn-delete-inst" data-id="${inst.id}" style="color: #fca5a5; border-color: #7f1d1d;">Remove</button>
+                    `;
+                    instanceList.appendChild(div);
+                });
+            });
+    }
+
+    if (instanceList) {
+        instanceList.addEventListener('click', (e) => {
+            if (e.target.classList.contains('btn-delete-inst')) {
+                const id = e.target.getAttribute('data-id');
+                fetch('/api/instances', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: id })
+                }).then(() => fetchInstances());
+            }
+        });
+    }
+
+    if (btnAddInstance) {
+        btnAddInstance.addEventListener('click', () => {
+            const name = newInstanceName.value;
+            const path = newInstancePath.value;
+            const risk_usd = parseFloat(newInstanceRisk.value || 100);
+            const symbol_suffix = newInstanceSuffix ? newInstanceSuffix.value : '';
+            if (!name || !path) { alert("Please enter name and path"); return; }
+            fetch('/api/instances', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, path, risk_usd, symbol_suffix })
+            }).then(() => {
+                newInstanceName.value = '';
+                newInstancePath.value = '';
+                if(newInstanceRisk) newInstanceRisk.value = '100';
+                if(newInstanceSuffix) newInstanceSuffix.value = '';
+                fetchInstances();
+            });
+        });
+    }
+
+    if (btnBrowsePath) {
+        btnBrowsePath.addEventListener('click', () => {
+            fetch('/api/browse_file')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.path) {
+                        newInstancePath.value = data.path;
+                    }
+                })
+                .catch(err => console.error("Browse file error:", err));
+        });
+    }
 });

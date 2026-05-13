@@ -19,7 +19,7 @@ load_dotenv()
 # --- GLOBALS & STATE ---
 clients = []
 global_ngrok_url = "Starting Ngrok tunnel..."
-global_mt5_status = False
+global_mt5_status = '{"online": false, "text": "Checking..."}'
 
 recent_logs = []
 MAX_RECENT_LOGS = 100
@@ -57,16 +57,22 @@ werk_log = logging.getLogger('werkzeug')
 werk_log.setLevel(logging.ERROR)
 
 # --- MT5 LOGIC ---
-def calculate_volume(symbol, entry_price, sl_price, risk_usd):
-    if not mt5.initialize():
+def calculate_volume(symbol, entry_price, sl_price, risk_usd, instance_path=None, symbol_suffix=""):
+    actual_symbol = symbol + symbol_suffix
+    if instance_path:
+        initialized = mt5.initialize(path=instance_path)
+    else:
+        initialized = mt5.initialize()
+        
+    if not initialized:
         return 0.01
         
-    symbol_info = mt5.symbol_info(symbol)
+    symbol_info = mt5.symbol_info(actual_symbol)
     if symbol_info is None:
-        logging.error(f"Error: {symbol} not found in MT5")
+        logging.error(f"Error: {actual_symbol} not found in MT5")
         return 0.01
         
-    mt5.symbol_select(symbol, True)
+    mt5.symbol_select(actual_symbol, True)
     tick_size = symbol_info.trade_tick_size
     tick_value = symbol_info.trade_tick_value
     
@@ -89,14 +95,20 @@ def calculate_volume(symbol, entry_price, sl_price, risk_usd):
     
     return round(volume, 2)
 
-def execute_trade(symbol, action_type, sl, tp, volume, entry_price, magic=999111, comment="TradingView Signal"):
-    if not mt5.initialize():
+def execute_trade(symbol, action_type, sl, tp, volume, entry_price, instance_path=None, magic=999111, comment="TradingView Signal", symbol_suffix=""):
+    actual_symbol = symbol + symbol_suffix
+    if instance_path:
+        initialized = mt5.initialize(path=instance_path)
+    else:
+        initialized = mt5.initialize()
+        
+    if not initialized:
         logging.error(f"MT5 initialization failed: {mt5.last_error()}")
         return None
         
-    tick = mt5.symbol_info_tick(symbol)
+    tick = mt5.symbol_info_tick(actual_symbol)
     if tick is None:
-        logging.error(f"Failed to get tick for {symbol}")
+        logging.error(f"Failed to get tick for {actual_symbol}")
         return None
 
     ask = tick.ask
@@ -134,7 +146,7 @@ def execute_trade(symbol, action_type, sl, tp, volume, entry_price, magic=999111
 
     request = {
         "action": action_req,
-        "symbol": symbol,
+        "symbol": actual_symbol,
         "volume": float(volume),
         "type": order_type,
         "price": price,
@@ -187,45 +199,90 @@ def send_telegram_message(message):
 def init_db():
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
+    
+    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trade_groups'")
+    has_old = c.fetchone()
+    
+    is_migrated = False
+    if has_old:
+        c.execute("PRAGMA table_info(trade_groups)")
+        columns = [col[1] for col in c.fetchall()]
+        if 'id' in columns:
+            is_migrated = True
+            
+    if has_old and not is_migrated:
+        logging.info("Migrating trade_groups to new schema...")
+        c.execute("ALTER TABLE trade_groups RENAME TO trade_groups_v1")
+        
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS instances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            path TEXT,
+            risk_usd REAL DEFAULT 100.0,
+            symbol_suffix TEXT DEFAULT ''
+        )
+    ''')
+    
+    try:
+        c.execute('ALTER TABLE instances ADD COLUMN risk_usd REAL DEFAULT 100.0')
+    except sqlite3.OperationalError:
+        pass
+        
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN symbol_suffix TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    
     c.execute('''
         CREATE TABLE IF NOT EXISTS trade_groups (
-            magic_number INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instance_id INTEGER,
+            magic_number INTEGER,
             symbol TEXT,
+            action TEXT,
+            entry_price REAL,
+            sl REAL,
+            tp1 REAL,
+            tp2 REAL,
+            vol1 REAL,
+            vol2 REAL,
+            split_trade INTEGER,
             trade_1_ticket INTEGER,
             trade_2_ticket INTEGER,
             recovery_ticket INTEGER,
+            rec_action TEXT,
+            rec_entry REAL,
+            rec_sl REAL,
+            rec_tp REAL,
+            rec_volume REAL,
             status TEXT
         )
     ''')
-    try:
-        c.execute('ALTER TABLE trade_groups ADD COLUMN rec_action TEXT')
-        c.execute('ALTER TABLE trade_groups ADD COLUMN rec_entry REAL')
-        c.execute('ALTER TABLE trade_groups ADD COLUMN rec_sl REAL')
-        c.execute('ALTER TABLE trade_groups ADD COLUMN rec_tp REAL')
-        c.execute('ALTER TABLE trade_groups ADD COLUMN rec_volume REAL')
-    except sqlite3.OperationalError:
-        pass
+    
     conn.commit()
     conn.close()
 
-def check_trade_group(group):
-    magic, symbol, t1_ticket, t2_ticket, rec_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status = group
+def check_trade_group(group, instance_path=None, inst_name="Default", symbol_suffix=""):
+    group_id, magic, symbol, t1_ticket, t2_ticket, rec_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status = group
+    
+    prefix = f"[{inst_name}] [Magic {magic}]"
     
     if status == 'PENDING_ORIGINAL':
         pos = mt5.positions_get(ticket=t1_ticket)
         if pos and len(pos) > 0:
-            logging.info(f"[Magic {magic}] Original trade filled! Placing Recovery Pending Order...")
-            new_rec_ticket = execute_trade(symbol, rec_action, rec_sl, rec_tp, rec_volume, rec_entry, magic, "Recovery")
+            logging.info(f"{prefix} Original trade filled! Placing Recovery Pending Order...")
+            new_rec_ticket = execute_trade(symbol, rec_action, rec_sl, rec_tp, rec_volume, rec_entry, instance_path, magic, "Recovery", symbol_suffix)
             
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
             if new_rec_ticket:
-                c.execute("UPDATE trade_groups SET recovery_ticket = ?, status = 'ACTIVE' WHERE magic_number = ?", (new_rec_ticket, magic))
-                send_telegram_message(f"🔄 [Magic {magic}] Original {symbol} Trade Filled!\nPlacing Recovery {rec_action} Order at {rec_entry} (Ticket: {new_rec_ticket})")
+                c.execute("UPDATE trade_groups SET recovery_ticket = ?, status = 'ACTIVE' WHERE id = ?", (new_rec_ticket, group_id))
+                send_telegram_message(f"🔄 {prefix} Original {symbol} Trade Filled!\nPlacing Recovery {rec_action} Order at {rec_entry} (Ticket: {new_rec_ticket})")
             else:
-                logging.error(f"[Magic {magic}] Failed to place Recovery Trade.")
-                send_telegram_message(f"⚠️ [Magic {magic}] Original {symbol} Trade Filled, but FAILED to place Recovery Trade!")
-                c.execute("UPDATE trade_groups SET status = 'ACTIVE' WHERE magic_number = ?", (magic,))
+                logging.error(f"{prefix} Failed to place Recovery Trade.")
+                send_telegram_message(f"⚠️ {prefix} Original {symbol} Trade Filled, but FAILED to place Recovery Trade!")
+                c.execute("UPDATE trade_groups SET status = 'ACTIVE' WHERE id = ?", (group_id,))
             conn.commit()
             conn.close()
             notify_clients("tracker_update", "update")
@@ -267,18 +324,18 @@ def check_trade_group(group):
                                 reason = "Price reached TP1 without filling"
                                 
                     if invalid:
-                        logging.info(f"[Magic {magic}] {reason}. Cancelling pending orders...")
+                        logging.info(f"{prefix} {reason}. Cancelling pending orders...")
                         mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": t1_ticket})
                         if t2_ticket:
                             mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": t2_ticket})
                             
                         conn = sqlite3.connect('trades.db')
                         c = conn.cursor()
-                        c.execute("UPDATE trade_groups SET status = 'CANCELLED' WHERE magic_number = ?", (magic,))
+                        c.execute("UPDATE trade_groups SET status = 'CANCELLED' WHERE id = ?", (group_id,))
                         conn.commit()
                         conn.close()
                         
-                        send_telegram_message(f"❌ [Magic {magic}] {symbol} Pending Trade Invalidated: {reason}.")
+                        send_telegram_message(f"❌ {prefix} {symbol} Pending Trade Invalidated: {reason}.")
                         notify_clients("tracker_update", "update")
                         return
             
@@ -289,10 +346,10 @@ def check_trade_group(group):
                 if h_order.state in (mt5.ORDER_STATE_CANCELED, mt5.ORDER_STATE_REJECTED):
                     conn = sqlite3.connect('trades.db')
                     c = conn.cursor()
-                    c.execute("UPDATE trade_groups SET status = 'CANCELLED' WHERE magic_number = ?", (magic,))
+                    c.execute("UPDATE trade_groups SET status = 'CANCELLED' WHERE id = ?", (group_id,))
                     conn.commit()
                     conn.close()
-                    send_telegram_message(f"❌ [Magic {magic}] {symbol} Original Pending Order cancelled. Aborting recovery setup.")
+                    send_telegram_message(f"❌ {prefix} {symbol} Original Pending Order cancelled. Aborting recovery setup.")
                     notify_clients("tracker_update", "update")
         return
         
@@ -312,13 +369,13 @@ def check_trade_group(group):
                 c = conn.cursor()
                 
                 if profit > 0:
-                    logging.info(f"[Magic {magic}] Recovery Trade Hit TP!")
-                    send_telegram_message(f"✅ [Magic {magic}] {symbol} Recovery Trade hit TP!")
-                    c.execute("UPDATE trade_groups SET status = 'RECOVERY_SUCCESS' WHERE magic_number = ?", (magic,))
+                    logging.info(f"{prefix} Recovery Trade Hit TP!")
+                    send_telegram_message(f"✅ {prefix} {symbol} Recovery Trade hit TP!")
+                    c.execute("UPDATE trade_groups SET status = 'RECOVERY_SUCCESS' WHERE id = ?", (group_id,))
                 else:
-                    logging.info(f"[Magic {magic}] Recovery Trade Hit SL!")
-                    send_telegram_message(f"🛑 [Magic {magic}] {symbol} Recovery Trade hit SL!")
-                    c.execute("UPDATE trade_groups SET status = 'RECOVERY_FAILED' WHERE magic_number = ?", (magic,))
+                    logging.info(f"{prefix} Recovery Trade Hit SL!")
+                    send_telegram_message(f"🛑 {prefix} {symbol} Recovery Trade hit SL!")
+                    c.execute("UPDATE trade_groups SET status = 'RECOVERY_FAILED' WHERE id = ?", (group_id,))
                 conn.commit()
                 conn.close()
                 notify_clients("tracker_update", "update")
@@ -339,21 +396,21 @@ def check_trade_group(group):
             c = conn.cursor()
             
             if profit > 0:
-                logging.info(f"[Magic {magic}] TP1 Hit for Original Trade. Cancelling Recovery...")
+                logging.info(f"{prefix} TP1 Hit for Original Trade. Cancelling Recovery...")
                 if rec_ticket:
                     res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": rec_ticket})
                     if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                        logging.info(f"[Magic {magic}] Recovery Trade {rec_ticket} cancelled.")
-                        send_telegram_message(f"✅ [Magic {magic}] {symbol} TP1 Hit!\nRecovery Trade (Ticket: {rec_ticket}) has been CANCELLED.")
+                        logging.info(f"{prefix} Recovery Trade {rec_ticket} cancelled.")
+                        send_telegram_message(f"✅ {prefix} {symbol} TP1 Hit!\nRecovery Trade (Ticket: {rec_ticket}) has been CANCELLED.")
                     else:
-                        send_telegram_message(f"⚠️ [Magic {magic}] {symbol} TP1 Hit!\nWARNING: Failed to cancel Recovery Trade (Ticket: {rec_ticket}). Please cancel manually!")
+                        send_telegram_message(f"⚠️ {prefix} {symbol} TP1 Hit!\nWARNING: Failed to cancel Recovery Trade (Ticket: {rec_ticket}). Please cancel manually!")
                 else:
-                    send_telegram_message(f"✅ [Magic {magic}] {symbol} TP1 Hit!\n(No recovery trade to cancel)")
-                c.execute("UPDATE trade_groups SET status = 'SUCCESS_TP1_HIT' WHERE magic_number = ?", (magic,))
+                    send_telegram_message(f"✅ {prefix} {symbol} TP1 Hit!\n(No recovery trade to cancel)")
+                c.execute("UPDATE trade_groups SET status = 'SUCCESS_TP1_HIT' WHERE id = ?", (group_id,))
             else:
-                logging.info(f"[Magic {magic}] SL Hit for Original Trade. Recovery Triggered.")
-                send_telegram_message(f"🛑 [Magic {magic}] {symbol} SL Hit!\nRecovery Trade (Ticket: {rec_ticket}) has been TRIGGERED.")
-                c.execute("UPDATE trade_groups SET status = 'RECOVERY_TRIGGERED' WHERE magic_number = ?", (magic,))
+                logging.info(f"{prefix} SL Hit for Original Trade. Recovery Triggered.")
+                send_telegram_message(f"🛑 {prefix} {symbol} SL Hit!\nRecovery Trade (Ticket: {rec_ticket}) has been TRIGGERED.")
+                c.execute("UPDATE trade_groups SET status = 'RECOVERY_TRIGGERED' WHERE id = ?", (group_id,))
             conn.commit()
             conn.close()
             notify_clients("tracker_update", "update")
@@ -362,25 +419,42 @@ def poller_thread():
     global global_mt5_status
     while True:
         try:
-            if not mt5.initialize():
-                if global_mt5_status:
-                    global_mt5_status = False
-                    notify_clients("mt5_status", "false")
-                time.sleep(5)
-                continue
-            
-            if not global_mt5_status:
-                global_mt5_status = True
-                notify_clients("mt5_status", "true")
-                
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
-            c.execute("SELECT magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status FROM trade_groups WHERE status IN ('ACTIVE', 'PENDING_ORIGINAL', 'RECOVERY_TRIGGERED')")
-            active_groups = c.fetchall()
-            conn.close()
+            c.execute("SELECT id, name, path, symbol_suffix FROM instances")
+            instances = c.fetchall()
             
-            for group in active_groups:
-                check_trade_group(group)
+            if not instances:
+                # Fallback to default single instance
+                if mt5.initialize():
+                    status_data = json.dumps({"online": True, "text": "MT5 Connected"})
+                    c.execute("SELECT id, magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status FROM trade_groups WHERE status IN ('ACTIVE', 'PENDING_ORIGINAL', 'RECOVERY_TRIGGERED')")
+                    active_groups = c.fetchall()
+                    for group in active_groups:
+                        check_trade_group(group, None, "Default")
+                else:
+                    status_data = json.dumps({"online": False, "text": "MT5 Offline"})
+            else:
+                total_count = len(instances)
+                online_count = 0
+                for inst in instances:
+                    inst_id, inst_name, inst_path, symbol_suffix = inst
+                    if mt5.initialize(path=inst_path):
+                        online_count += 1
+                        c.execute("SELECT id, magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status FROM trade_groups WHERE status IN ('ACTIVE', 'PENDING_ORIGINAL', 'RECOVERY_TRIGGERED') AND instance_id = ?", (inst_id,))
+                        active_groups = c.fetchall()
+                        for group in active_groups:
+                            check_trade_group(group, inst_path, inst_name, symbol_suffix)
+                
+                is_any_online = online_count > 0
+                status_text = f"MT5: {online_count}/{total_count} Online" if total_count > 0 else "No Instances"
+                status_data = json.dumps({"online": is_any_online, "text": status_text})
+            
+            if status_data != global_mt5_status:
+                global_mt5_status = status_data
+                notify_clients("mt5_status", status_data)
+            
+            conn.close()
         except Exception as e:
             logging.error(f"Poller thread error: {e}")
         time.sleep(3)
@@ -394,7 +468,7 @@ def reconcile_on_boot():
         
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
-    c.execute("SELECT magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status FROM trade_groups WHERE status IN ('ACTIVE', 'PENDING_ORIGINAL', 'RECOVERY_TRIGGERED')")
+    c.execute("SELECT id, magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status FROM trade_groups WHERE status IN ('ACTIVE', 'PENDING_ORIGINAL', 'RECOVERY_TRIGGERED')")
     active_groups = c.fetchall()
     conn.close()
     
@@ -442,7 +516,7 @@ def stream():
     
     # Send initial state
     q.put({"event": "ngrok_url", "data": global_ngrok_url})
-    q.put({"event": "mt5_status", "data": str(global_mt5_status).lower()})
+    q.put({"event": "mt5_status", "data": str(global_mt5_status)})
     
     # Send log history so UI isn't blank on refresh
     for log_msg in recent_logs:
@@ -461,6 +535,58 @@ def stream():
             
     return Response(generate(), mimetype='text/event-stream')
 
+@flask_app.route('/api/instances', methods=['GET', 'POST', 'DELETE'])
+def api_instances():
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    
+    if request.method == 'GET':
+        c.execute("SELECT id, name, path, risk_usd, symbol_suffix FROM instances ORDER BY id ASC")
+        rows = c.fetchall()
+        instances = [{"id": r[0], "name": r[1], "path": r[2], "risk_usd": r[3], "symbol_suffix": r[4]} for r in rows]
+        conn.close()
+        return jsonify(instances)
+        
+    elif request.method == 'POST':
+        data = request.json
+        name = data.get('name')
+        path = data.get('path')
+        risk_usd = float(data.get('risk_usd', 100.0))
+        symbol_suffix = data.get('symbol_suffix', '')
+        if not name or not path:
+            conn.close()
+            return jsonify({"error": "Name and path required"}), 400
+            
+        c.execute("INSERT INTO instances (name, path, risk_usd, symbol_suffix) VALUES (?, ?, ?, ?)", (name, path, risk_usd, symbol_suffix))
+        conn.commit()
+        new_id = c.lastrowid
+        conn.close()
+        return jsonify({"id": new_id, "name": name, "path": path, "risk_usd": risk_usd, "symbol_suffix": symbol_suffix}), 201
+        
+    elif request.method == 'DELETE':
+        data = request.json
+        instance_id = data.get('id')
+        if not instance_id:
+            conn.close()
+            return jsonify({"error": "ID required"}), 400
+            
+        c.execute("DELETE FROM instances WHERE id = ?", (instance_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success"})
+
+@flask_app.route('/api/browse_file', methods=['GET'])
+def api_browse_file():
+    import subprocess
+    import sys
+    cmd = [
+        sys.executable, '-c', 
+        "import tkinter as tk; from tkinter import filedialog; root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True); print(filedialog.askopenfilename(title='Select MT5 terminal64.exe', filetypes=[('Executable files', '*.exe'), ('All files', '*.*')]))"
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    file_path = result.stdout.strip()
+    return jsonify({"path": file_path})
+
 @flask_app.route('/api/tracker')
 def api_tracker():
     try:
@@ -468,10 +594,16 @@ def api_tracker():
         c = conn.cursor()
         
         tab = request.args.get('tab', 'active')
+        query_base = """
+            SELECT t.id, t.instance_id, i.name, t.magic_number, t.symbol, 
+                   t.trade_1_ticket, t.trade_2_ticket, t.recovery_ticket, t.status 
+            FROM trade_groups t
+            LEFT JOIN instances i ON t.instance_id = i.id
+        """
         if tab == 'active':
-            c.execute("SELECT magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, status FROM trade_groups WHERE status IN ('PENDING_ORIGINAL', 'ACTIVE', 'RECOVERY_TRIGGERED') ORDER BY symbol ASC, magic_number DESC LIMIT 100")
+            c.execute(f"{query_base} WHERE t.status IN ('PENDING_ORIGINAL', 'ACTIVE', 'RECOVERY_TRIGGERED', 'FAILED_EXECUTION') ORDER BY t.symbol ASC, t.id DESC LIMIT 100")
         else:
-            c.execute("SELECT magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, status FROM trade_groups WHERE status IN ('SUCCESS_TP1_HIT', 'RECOVERY_SUCCESS', 'RECOVERY_FAILED', 'CANCELLED') ORDER BY symbol ASC, magic_number DESC LIMIT 100")
+            c.execute(f"{query_base} WHERE t.status IN ('SUCCESS_TP1_HIT', 'RECOVERY_SUCCESS', 'RECOVERY_FAILED', 'CANCELLED') ORDER BY t.symbol ASC, t.id DESC LIMIT 100")
             
         rows = c.fetchall()
         conn.close()
@@ -479,12 +611,15 @@ def api_tracker():
         data = []
         for r in rows:
             data.append({
-                "magic_number": r[0],
-                "symbol": r[1],
-                "trade_1_ticket": r[2],
-                "trade_2_ticket": r[3],
-                "recovery_ticket": r[4],
-                "status": r[5]
+                "id": r[0],
+                "instance_id": r[1],
+                "instance_name": r[2] or "Unknown",
+                "magic_number": r[3],
+                "symbol": r[4],
+                "trade_1_ticket": r[5],
+                "trade_2_ticket": r[6],
+                "recovery_ticket": r[7],
+                "status": r[8]
             })
         return jsonify(data)
     except Exception as e:
@@ -511,47 +646,82 @@ def process_signal(data):
     sl = float(data.get('sl', 0))
     tp1 = float(data.get('tp1', 0))
     tp2 = float(data.get('tp2', 0))
-    risk_usd = float(data.get('risk_usd', 100.0))
     
-    calculated_volume = calculate_volume(symbol, entry, sl, risk_usd)
-    symbol_info = mt5.symbol_info(symbol)
-    step = symbol_info.volume_step if symbol_info else 0.01
-    min_vol = symbol_info.volume_min if symbol_info else 0.01
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    c.execute("SELECT id, name, path, risk_usd, symbol_suffix FROM instances ORDER BY id ASC")
+    instances = c.fetchall()
+    conn.close()
     
-    vol1 = round((calculated_volume / 2) / step) * step
-    vol2 = calculated_volume - vol1
-    vol1 = round(vol1, 2)
-    vol2 = round(vol2, 2)
-    
-    split_trade = False
-    split_reason = ""
-    if tp2 == 0:
-        split_reason = "No TP2 provided."
-    elif calculated_volume < (min_vol * 2):
-        split_reason = f"Calculated volume ({calculated_volume}) is too small to split (Minimum required: {min_vol * 2})."
-    else:
-        split_trade = True
+    if not instances:
+        instances = [(None, "Default", None, 100.0, "")]
         
-    # calculate recovery
-    if mt5.initialize():
-        tick = mt5.symbol_info_tick(symbol)
-        actual_entry = entry if entry > 0 else (tick.ask if action == "BUY" else tick.bid)
-    else:
+    instance_executions = []
+    
+    for inst in instances:
+        inst_id, inst_name, inst_path, risk_usd, symbol_suffix = inst
+        
+        calculated_volume = calculate_volume(symbol, entry, sl, risk_usd, inst_path, symbol_suffix)
+        
+        step = 0.01
+        min_vol = 0.01
         actual_entry = entry
-    
-    rec_action = "SELL" if action == "BUY" else "BUY"
-    rec_entry = sl
-    rec_sl = actual_entry
-    r_amount = abs(rec_entry - rec_sl)
-    
-    if rec_action == "BUY":
-        rec_tp = rec_entry + (r_amount * 0.5)
-    else:
-        rec_tp = rec_entry - (r_amount * 0.5)
         
-    rec_volume = calculate_volume(symbol, rec_entry, rec_sl, risk_usd)
+        actual_symbol = symbol + symbol_suffix
+        if mt5.initialize(path=inst_path):
+            symbol_info = mt5.symbol_info(actual_symbol)
+            if symbol_info:
+                step = symbol_info.volume_step
+                min_vol = symbol_info.volume_min
+            tick = mt5.symbol_info_tick(actual_symbol)
+            if tick:
+                actual_entry = entry if entry > 0 else (tick.ask if action == "BUY" else tick.bid)
+                
+        vol1 = round((calculated_volume / 2) / step) * step
+        vol2 = calculated_volume - vol1
+        vol1 = round(vol1, 2)
+        vol2 = round(vol2, 2)
         
-    logging.info(f"Signal received for {symbol}. Waiting for confirmation in UI...")
+        split_trade = False
+        split_reason = ""
+        if tp2 == 0:
+            split_reason = "No TP2 provided."
+        elif calculated_volume < (min_vol * 2):
+            split_reason = f"Calculated volume ({calculated_volume}) is too small to split (Minimum required: {min_vol * 2})."
+        else:
+            split_trade = True
+            
+        rec_action = "SELL" if action == "BUY" else "BUY"
+        rec_entry = sl
+        rec_sl = actual_entry
+        r_amount = abs(rec_entry - rec_sl)
+        
+        if rec_action == "BUY":
+            rec_tp = rec_entry + (r_amount * 0.5)
+        else:
+            rec_tp = rec_entry - (r_amount * 0.5)
+            
+        rec_volume = calculate_volume(symbol, rec_entry, rec_sl, risk_usd, inst_path, symbol_suffix)
+        
+        instance_executions.append({
+            "id": inst_id,
+            "name": inst_name,
+            "path": inst_path,
+            "risk_usd": risk_usd,
+            "symbol_suffix": symbol_suffix,
+            "calculated_volume": calculated_volume,
+            "vol1": vol1,
+            "vol2": vol2,
+            "split_trade": split_trade,
+            "split_reason": split_reason,
+            "rec_action": rec_action,
+            "rec_entry": rec_entry,
+            "rec_sl": rec_sl,
+            "rec_tp": rec_tp,
+            "rec_volume": rec_volume
+        })
+        
+    logging.info(f"Signal received for {symbol}. Calculated volumes for {len(instance_executions)} instances. Waiting for confirmation in UI...")
     
     # Build message and send Telegram notification
     msg = f"NEW TRADINGVIEW SIGNAL\n\n"
@@ -564,39 +734,22 @@ def process_signal(data):
     msg += f"Stop Loss: {sl}\n"
     msg += f"Take Profit 1: {tp1}\n"
     if tp2 != 0:
-        msg += f"Take Profit 2: {tp2}\n"
-    msg += f"Risk Amount: ${risk_usd}\n"
-    msg += f"Total Lot Size: {calculated_volume} Lots\n\n"
-    
-    if split_trade:
-        msg += f"Will execute TWO trades:\n"
-        msg += f"- Trade 1: {vol1} Lots targeting TP1\n"
-        msg += f"- Trade 2: {vol2} Lots targeting TP2\n\n"
-    else:
-        msg += f"Will execute ONE trade: {calculated_volume} Lots targeting TP1\n"
-        msg += f"(Trade not split because: {split_reason})\n\n"
+        msg += f"Take Profit 2: {tp2}\n\n"
         
-    msg += f"Recovery Trade (Pending):\n"
-    msg += f"- Action: {rec_action}\n"
-    msg += f"- Entry: {rec_entry}\n"
-    msg += f"- SL: {rec_sl} | TP: {rec_tp}\n"
-    msg += f"- Volume: {rec_volume}\n\n"
+    for exec_data in instance_executions:
+        msg += f"Broker: {exec_data['name']}\n"
+        msg += f"Risk: ${exec_data['risk_usd']}\n"
+        if exec_data['split_trade']:
+            msg += f"Lot Size: {exec_data['calculated_volume']} (Split: {exec_data['vol1']} / {exec_data['vol2']})\n"
+        else:
+            msg += f"Lot Size: {exec_data['calculated_volume']} (Single)\n"
+        msg += "\n"
         
     msg += f"Do you want to execute this now?"
-    
     send_telegram_message(msg)
     
     # Enhance data for the UI
-    data['calculated_volume'] = calculated_volume
-    data['split_trade'] = split_trade
-    data['split_reason'] = split_reason
-    data['vol1'] = vol1
-    data['vol2'] = vol2
-    data['rec_action'] = rec_action
-    data['rec_entry'] = rec_entry
-    data['rec_sl'] = rec_sl
-    data['rec_tp'] = rec_tp
-    data['rec_volume'] = rec_volume
+    data['instance_executions'] = instance_executions
     
     # Send to UI via SSE
     notify_clients("trade_signal", json.dumps(data))
@@ -610,42 +763,108 @@ def api_execute_trade():
     tp1 = float(data.get('tp1', 0))
     tp2 = float(data.get('tp2', 0))
     entry = float(data.get('entry', 0))
-    split_trade = data.get('split_trade', False)
-    vol1 = data.get('vol1')
-    vol2 = data.get('vol2')
-    calculated_volume = data.get('calculated_volume')
     
-    rec_action = data.get('rec_action')
-    rec_entry = data.get('rec_entry')
-    rec_sl = data.get('rec_sl')
-    rec_tp = data.get('rec_tp')
-    rec_volume = data.get('rec_volume')
+    instance_executions = data.get('instance_executions', [])
     
     logging.info(f"User clicked EXECUTE for {symbol}.")
     
     magic_number = random.randint(100000, 999999)
+    
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    
+    for exec_data in instance_executions:
+        inst_id = exec_data.get('id')
+        inst_name = exec_data.get('name')
+        inst_path = exec_data.get('path')
+        symbol_suffix = exec_data.get('symbol_suffix', '')
+        vol1 = exec_data.get('vol1')
+        vol2 = exec_data.get('vol2')
+        split_trade = exec_data.get('split_trade')
+        split_int = 1 if split_trade else 0
+        rec_action = exec_data.get('rec_action')
+        rec_entry = exec_data.get('rec_entry')
+        rec_sl = exec_data.get('rec_sl')
+        rec_tp = exec_data.get('rec_tp')
+        rec_volume = exec_data.get('rec_volume')
+        
+        t1_ticket = None
+        t2_ticket = None
+        
+        if split_trade:
+            t1_ticket = execute_trade(symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", symbol_suffix)
+            t2_ticket = execute_trade(symbol, action, sl, tp2, vol2, entry, inst_path, magic_number, "Orig_TP2", symbol_suffix)
+        else:
+            t1_ticket = execute_trade(symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", symbol_suffix)
+            
+        status = 'PENDING_ORIGINAL' if t1_ticket else 'FAILED_EXECUTION'
+        
+        c.execute('''
+            INSERT INTO trade_groups (
+                instance_id, magic_number, symbol, action, entry_price, sl, tp1, tp2, vol1, vol2, split_trade,
+                trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            inst_id, magic_number, symbol, action, entry, sl, tp1, tp2, vol1, vol2, split_int,
+            t1_ticket, t2_ticket, None, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status
+        ))
+        
+        if status == 'FAILED_EXECUTION':
+            logging.error(f"Failed to execute on instance {inst_name}. Marked for retry.")
+        else:
+            logging.info(f"Trade Group [Magic {magic_number}] saved on {inst_name} (Status: {status}).")
+            
+    conn.commit()
+    conn.close()
+    notify_clients("tracker_update", "update")
+        
+    return jsonify({"status": "success"})
+
+@flask_app.route('/api/retry_trade', methods=['POST'])
+def api_retry_trade():
+    data = request.json
+    trade_id = data.get('id')
+    if not trade_id:
+        return jsonify({"error": "Trade ID required"}), 400
+        
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    c.execute("""
+        SELECT t.magic_number, t.symbol, t.action, t.entry_price, t.sl, t.tp1, t.tp2, t.vol1, t.vol2, t.split_trade, i.path, i.symbol_suffix
+        FROM trade_groups t
+        LEFT JOIN instances i ON t.instance_id = i.id
+        WHERE t.id = ? AND t.status = 'FAILED_EXECUTION'
+    """, (trade_id,))
+    row = c.fetchone()
+    
+    if not row:
+        conn.close()
+        return jsonify({"error": "Trade not found or not in failed state"}), 404
+        
+    magic_number, symbol, action, entry, sl, tp1, tp2, vol1, vol2, split_trade, inst_path, symbol_suffix = row
+    
     t1_ticket = None
     t2_ticket = None
     
     if split_trade:
-        t1_ticket = execute_trade(symbol, action, sl, tp1, vol1, entry, magic_number, "Orig_TP1")
-        t2_ticket = execute_trade(symbol, action, sl, tp2, vol2, entry, magic_number, "Orig_TP2")
+        t1_ticket = execute_trade(symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", symbol_suffix)
+        t2_ticket = execute_trade(symbol, action, sl, tp2, vol2, entry, inst_path, magic_number, "Orig_TP2", symbol_suffix)
     else:
-        t1_ticket = execute_trade(symbol, action, sl, tp1, calculated_volume, entry, magic_number, "Orig_TP1")
+        t1_ticket = execute_trade(symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", symbol_suffix)
         
     if t1_ticket:
-        conn = sqlite3.connect('trades.db')
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO trade_groups (magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (magic_number, symbol, t1_ticket, t2_ticket, None, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, 'PENDING_ORIGINAL'))
+        c.execute("UPDATE trade_groups SET trade_1_ticket=?, trade_2_ticket=?, status='PENDING_ORIGINAL' WHERE id=?", 
+                 (t1_ticket, t2_ticket, trade_id))
         conn.commit()
-        conn.close()
-        logging.info(f"Trade Group [Magic {magic_number}] saved to DB (Status: PENDING_ORIGINAL).")
-        notify_clients("tracker_update", "update")
+        logging.info(f"Retry successful for Trade ID {trade_id}")
+        res = {"status": "success"}
+    else:
+        logging.error(f"Retry failed for Trade ID {trade_id}")
+        res = {"status": "failed", "error": "Execution failed again"}
         
-    return jsonify({"status": "success"})
+    conn.close()
+    notify_clients("tracker_update", "update")
+    return jsonify(res)
 
 @flask_app.route('/api/abort_trade', methods=['POST'])
 def api_abort_trade():
