@@ -37,6 +37,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnExecute = document.getElementById('btn-execute');
     const btnAbort = document.getElementById('btn-abort');
 
+    // State map to remember which nodes are expanded
+    const expandedState = {};
+    let currentFilter = 'all'; // 'all', 'active', 'pending'
+    let currentTab = 'active'; // 'active', 'history'
+
     let currentTradePayload = null;
     fetchTracker();
 
@@ -93,13 +98,10 @@ document.addEventListener('DOMContentLoaded', () => {
         logBox.scrollTop = logBox.scrollHeight;
     }
 
-    // State map to remember which nodes are expanded
-    // Default is false (collapsed). We store true for expanded nodes.
-    const expandedState = {};
-    let currentFilter = 'all'; // 'all', 'active', 'pending'
+
 
     function fetchTracker() {
-        fetch('/api/tracker')
+        fetch(`/api/tracker?tab=${currentTab}`)
             .then(res => res.json())
             .then(data => { renderTrackerTable(data); })
             .catch(err => console.error("Error fetching tracker:", err));
@@ -136,6 +138,17 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // Tab Buttons
+    const tabs = document.querySelectorAll('.section-toolbar .tab');
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            tabs.forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            currentTab = tab.getAttribute('data-tab');
+            fetchTracker();
+        });
+    });
+
     function getFriendlyStatus(status, isGroup = false) {
         if (!status) return 'Unknown';
         
@@ -161,105 +174,199 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function renderTrackerTable(rows) {
+        const trackerThead = document.querySelector('#tracker-table thead');
+        
+        if (currentTab === 'history') {
+            trackerThead.innerHTML = `
+                <tr>
+                    <th style="width: 15%;">Symbol</th>
+                    <th style="width: 20%;">Group</th>
+                    <th style="width: 15%;">Ticket</th>
+                    <th style="width: 20%;">Trade Type</th>
+                    <th style="width: 30%;">Status</th>
+                </tr>
+            `;
+        } else {
+            trackerThead.innerHTML = `
+                <tr>
+                    <th style="width: 25%;">Symbol / Group</th>
+                    <th style="width: 15%;">Ticket</th>
+                    <th style="width: 20%;">Trade Type</th>
+                    <th style="width: 40%;">Status</th>
+                </tr>
+            `;
+        }
+
         trackerTbody.innerHTML = '';
         if (!rows || rows.length === 0) return;
 
-        const symbols = {};
-        rows.forEach(r => {
-            const sym = r.symbol;
-            if (!symbols[sym]) symbols[sym] = [];
-            symbols[sym].push(r);
-        });
-
-        for (const [sym, groups] of Object.entries(symbols)) {
-            const symNodeId = `sym_${sym}`;
-            const symExpanded = expandedState[symNodeId] === true; // Default to false (collapsed)
-            
-            // Apply Filter to groups
-            const filteredGroups = groups.filter(g => {
-                if (currentFilter === 'all') return true;
-                if (currentFilter === 'active') return g.status === 'ACTIVE' || g.status === 'RECOVERY_TRIGGERED';
-                if (currentFilter === 'pending') return g.status.startsWith('PENDING');
-                return true;
+        if (currentTab === 'active') {
+            const symbols = {};
+            rows.forEach(r => {
+                const sym = r.symbol;
+                if (!symbols[sym]) symbols[sym] = [];
+                symbols[sym].push(r);
             });
 
-            if (filteredGroups.length === 0) continue; // Skip symbol if no groups match
+            for (const [sym, groups] of Object.entries(symbols)) {
+                const symNodeId = `sym_${sym}`;
+                const symExpanded = expandedState[symNodeId] === true; // Default to false (collapsed)
+                
+                // Apply Filter to groups
+                const filteredGroups = groups.filter(g => {
+                    if (currentFilter === 'all') return true;
+                    if (currentFilter === 'active') return g.status === 'ACTIVE' || g.status === 'RECOVERY_TRIGGERED';
+                    if (currentFilter === 'pending') return g.status.startsWith('PENDING');
+                    return true;
+                });
 
-            // Group Header (Symbol)
-            trackerTbody.innerHTML += `
-                <tr class="tree-header tree-toggle" data-node-id="${symNodeId}">
-                    <td colspan="4">
-                        <span class="toggle-icon ${symExpanded ? '' : 'collapsed'}">▼</span>
-                        <strong>${sym}</strong> <span style="font-size: 10px; color: var(--text-muted);">(${filteredGroups.length} Groups)</span>
-                    </td>
-                </tr>
-            `;
+                if (filteredGroups.length === 0) continue; // Skip symbol if no groups match
 
-            if (symExpanded) {
-                filteredGroups.forEach(g => {
-                    const groupNodeId = `grp_${sym}_${g.magic_number}`;
-                    const groupExpanded = expandedState[groupNodeId] === true; // Default to false
-                    
-                    // Group Row
-                    trackerTbody.innerHTML += `
-                        <tr class="tree-toggle" data-node-id="${groupNodeId}">
-                            <td class="indent-1">
-                                <span class="toggle-icon ${groupExpanded ? '' : 'collapsed'}">▼</span>
-                                Magic: ${g.magic_number}
-                            </td>
-                            <td></td>
-                            <td>Trade Group</td>
-                            <td><span class="badge-dense ${getBadgeClass(g.status)}">${getFriendlyStatus(g.status, true)}</span></td>
-                        </tr>
-                    `;
+                // Group Header (Symbol)
+                trackerTbody.innerHTML += `
+                    <tr class="tree-header tree-toggle" data-node-id="${symNodeId}">
+                        <td colspan="4">
+                            <span class="toggle-icon ${symExpanded ? '' : 'collapsed'}">▼</span>
+                            <strong>${sym}</strong> <span style="font-size: 10px; color: var(--text-muted);">(${filteredGroups.length} Groups)</span>
+                        </td>
+                    </tr>
+                `;
 
-                    if (groupExpanded) {
-                        // Compute status for original child trades
-                        let childStatus = g.status;
-                        if (g.status === 'RECOVERY_TRIGGERED' || g.status === 'RECOVERY_SUCCESS' || g.status === 'RECOVERY_FAILED') {
-                            childStatus = 'SL_HIT';
-                        }
-
-                        // Orig 1
+                if (symExpanded) {
+                    filteredGroups.forEach(g => {
+                        const groupNodeId = `grp_${sym}_${g.magic_number}`;
+                        const groupExpanded = expandedState[groupNodeId] === true; // Default to false
+                        
+                        // Group Row
                         trackerTbody.innerHTML += `
-                            <tr>
-                                <td class="indent-2">Orig 1 (TP1)</td>
-                                <td>${g.trade_1_ticket || 'N/A'}</td>
-                                <td>Original</td>
-                                <td><span class="badge-dense ${getBadgeClass(childStatus)}">${getFriendlyStatus(childStatus, false)}</span></td>
+                            <tr class="tree-toggle" data-node-id="${groupNodeId}">
+                                <td class="indent-1">
+                                    <span class="toggle-icon ${groupExpanded ? '' : 'collapsed'}">▼</span>
+                                    Magic: ${g.magic_number}
+                                </td>
+                                <td></td>
+                                <td>Trade Group</td>
+                                <td><span class="badge-dense ${getBadgeClass(g.status)}">${getFriendlyStatus(g.status, true)}</span></td>
                             </tr>
                         `;
 
-                        // Orig 2
-                        if (g.trade_2_ticket) {
+                        if (groupExpanded) {
+                            // Compute status for original child trades
+                            let childStatus = g.status;
+                            if (g.status === 'RECOVERY_TRIGGERED' || g.status === 'RECOVERY_SUCCESS' || g.status === 'RECOVERY_FAILED') {
+                                childStatus = 'SL_HIT';
+                            }
+
+                            // Orig 1
                             trackerTbody.innerHTML += `
                                 <tr>
-                                    <td class="indent-2">Orig 2 (TP2)</td>
-                                    <td>${g.trade_2_ticket}</td>
+                                    <td class="indent-2">Orig 1 (TP1)</td>
+                                    <td>${g.trade_1_ticket || 'N/A'}</td>
                                     <td>Original</td>
                                     <td><span class="badge-dense ${getBadgeClass(childStatus)}">${getFriendlyStatus(childStatus, false)}</span></td>
                                 </tr>
                             `;
+
+                            // Orig 2
+                            if (g.trade_2_ticket) {
+                                trackerTbody.innerHTML += `
+                                    <tr>
+                                        <td class="indent-2">Orig 2 (TP2)</td>
+                                        <td>${g.trade_2_ticket}</td>
+                                        <td>Original</td>
+                                        <td><span class="badge-dense ${getBadgeClass(childStatus)}">${getFriendlyStatus(childStatus, false)}</span></td>
+                                    </tr>
+                                `;
+                            }
+
+                            // Recovery
+                            let recStatus = g.status === 'PENDING_ORIGINAL' && !g.recovery_ticket ? 'PENDING_ORIGINAL' : g.status;
+                            if (g.status === 'SUCCESS_TP1_HIT') recStatus = 'CANCELLED';
+                            else if (g.status === 'RECOVERY_TRIGGERED') recStatus = 'ACTIVE';
+                            else if (g.status === 'CANCELLED') recStatus = 'CANCELLED';
+                            else if (g.recovery_ticket) recStatus = g.status === 'ACTIVE' ? 'PENDING (Placed)' : g.status;
+
+                            trackerTbody.innerHTML += `
+                                <tr>
+                                    <td class="indent-2">Recovery</td>
+                                    <td>${g.recovery_ticket || 'N/A'}</td>
+                                    <td>Recovery</td>
+                                    <td><span class="badge-dense ${getBadgeClass(recStatus)}">${getFriendlyStatus(recStatus, false)}</span></td>
+                                </tr>
+                            `;
                         }
+                    });
+                }
+            }
+        } else {
+            // History Tab: Flat list of groups with Symbol column
+            rows.forEach(g => {
+                const groupNodeId = `grp_hist_${g.magic_number}`;
+                const groupExpanded = expandedState[groupNodeId] === true;
+                
+                // Group Row (5 columns)
+                trackerTbody.innerHTML += `
+                    <tr class="tree-toggle" data-node-id="${groupNodeId}">
+                        <td>${g.symbol}</td>
+                        <td class="indent-1">
+                            <span class="toggle-icon ${groupExpanded ? '' : 'collapsed'}">▼</span>
+                            Magic: ${g.magic_number}
+                        </td>
+                        <td></td>
+                        <td>Trade Group</td>
+                        <td><span class="badge-dense ${getBadgeClass(g.status)}">${getFriendlyStatus(g.status, true)}</span></td>
+                    </tr>
+                `;
 
-                        // Recovery
-                        let recStatus = g.status === 'PENDING_ORIGINAL' && !g.recovery_ticket ? 'PENDING_ORIGINAL' : g.status;
-                        if (g.status === 'SUCCESS_TP1_HIT') recStatus = 'CANCELLED';
-                        else if (g.status === 'RECOVERY_TRIGGERED') recStatus = 'ACTIVE';
-                        else if (g.status === 'CANCELLED') recStatus = 'CANCELLED';
-                        else if (g.recovery_ticket) recStatus = g.status === 'ACTIVE' ? 'PENDING (Placed)' : g.status;
+                if (groupExpanded) {
+                    // Compute status for original child trades
+                    let childStatus = g.status;
+                    if (g.status === 'RECOVERY_TRIGGERED' || g.status === 'RECOVERY_SUCCESS' || g.status === 'RECOVERY_FAILED') {
+                        childStatus = 'SL_HIT';
+                    }
 
+                    // Orig 1
+                    trackerTbody.innerHTML += `
+                        <tr>
+                            <td></td>
+                            <td class="indent-2">Orig 1 (TP1)</td>
+                            <td>${g.trade_1_ticket || 'N/A'}</td>
+                            <td>Original</td>
+                            <td><span class="badge-dense ${getBadgeClass(childStatus)}">${getFriendlyStatus(childStatus, false)}</span></td>
+                        </tr>
+                    `;
+
+                    // Orig 2
+                    if (g.trade_2_ticket) {
                         trackerTbody.innerHTML += `
                             <tr>
-                                <td class="indent-2">Recovery</td>
-                                <td>${g.recovery_ticket || 'N/A'}</td>
-                                <td>Recovery</td>
-                                <td><span class="badge-dense ${getBadgeClass(recStatus)}">${getFriendlyStatus(recStatus, false)}</span></td>
+                                <td></td>
+                                <td class="indent-2">Orig 2 (TP2)</td>
+                                <td>${g.trade_2_ticket}</td>
+                                <td>Original</td>
+                                <td><span class="badge-dense ${getBadgeClass(childStatus)}">${getFriendlyStatus(childStatus, false)}</span></td>
                             </tr>
                         `;
                     }
-                });
-            }
+
+                    // Recovery
+                    let recStatus = g.status === 'PENDING_ORIGINAL' && !g.recovery_ticket ? 'PENDING_ORIGINAL' : g.status;
+                    if (g.status === 'SUCCESS_TP1_HIT') recStatus = 'CANCELLED';
+                    else if (g.status === 'RECOVERY_TRIGGERED') recStatus = 'ACTIVE';
+                    else if (g.status === 'CANCELLED') recStatus = 'CANCELLED';
+                    else if (g.recovery_ticket) recStatus = g.status === 'ACTIVE' ? 'PENDING (Placed)' : g.status;
+
+                    trackerTbody.innerHTML += `
+                        <tr>
+                            <td></td>
+                            <td class="indent-2">Recovery</td>
+                            <td>${g.recovery_ticket || 'N/A'}</td>
+                            <td>Recovery</td>
+                            <td><span class="badge-dense ${getBadgeClass(recStatus)}">${getFriendlyStatus(recStatus, false)}</span></td>
+                        </tr>
+                    `;
+                }
+            });
         }
     }
 

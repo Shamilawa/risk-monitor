@@ -466,7 +466,13 @@ def api_tracker():
     try:
         conn = sqlite3.connect('trades.db')
         c = conn.cursor()
-        c.execute("SELECT magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, status FROM trade_groups WHERE status != 'CANCELLED' ORDER BY symbol ASC, magic_number DESC LIMIT 100")
+        
+        tab = request.args.get('tab', 'active')
+        if tab == 'active':
+            c.execute("SELECT magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, status FROM trade_groups WHERE status IN ('PENDING_ORIGINAL', 'ACTIVE', 'RECOVERY_TRIGGERED') ORDER BY symbol ASC, magic_number DESC LIMIT 100")
+        else:
+            c.execute("SELECT magic_number, symbol, trade_1_ticket, trade_2_ticket, recovery_ticket, status FROM trade_groups WHERE status IN ('SUCCESS_TP1_HIT', 'RECOVERY_SUCCESS', 'RECOVERY_FAILED', 'CANCELLED') ORDER BY symbol ASC, magic_number DESC LIMIT 100")
+            
         rows = c.fetchall()
         conn.close()
         

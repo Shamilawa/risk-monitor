@@ -177,8 +177,11 @@ body {
     background: var(--bg-header);
     margin-top: 2px;
     margin-right: 2px;
-    cursor: default;
+    cursor: pointer;
     font-weight: bold;
+}
+.tab:not(.active):hover {
+    background: var(--bg-row-hover);
 }
 .tab.active {
     background: var(--bg-panel);
