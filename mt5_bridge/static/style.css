@@ -153,6 +153,7 @@ body {
     background: var(--bg-panel);
     border: 1px solid var(--border-color);
     overflow: hidden;
+    min-height: 0;
 }
 
 .logs-section {
@@ -436,5 +437,74 @@ body {
     background: var(--color-active);
     color: white;
     border-color: var(--color-active);
+    font-weight: bold;
+}
+
+/* Trading Log Styles */
+.summary-cards {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+    padding: 8px;
+    background: var(--bg-header);
+}
+
+.metric-card {
+    background: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    padding: 8px;
+    border-left: 3px solid var(--text-muted);
+}
+
+.metric-label {
+    font-size: 10px;
+    color: var(--text-muted);
+}
+
+.metric-value {
+    font-size: 18px;
+    font-weight: bold;
+    margin-top: 4px;
+}
+
+/* Custom Tooltip Component */
+.custom-tooltip {
+    position: absolute;
+    background: rgba(20, 20, 20, 0.95);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 10px;
+    color: #ffffff; /* White text for contrast in dark tooltip */
+    font-family: monospace;
+    font-size: 12px;
+    line-height: 1.4;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease-in-out;
+    z-index: 1000;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    backdrop-filter: blur(4px);
+    min-width: 150px;
+}
+
+.custom-tooltip.visible {
+    opacity: 1;
+}
+
+.custom-tooltip .tooltip-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+.custom-tooltip .tooltip-divider {
+    border-top: 1px dashed rgba(255, 255, 255, 0.3);
+    margin: 5px 0;
+}
+
+.custom-tooltip .tooltip-total {
+    border-top: 1px solid #ffffff;
+    border-bottom: 3px double #ffffff;
+    padding: 2px 0;
     font-weight: bold;
 }

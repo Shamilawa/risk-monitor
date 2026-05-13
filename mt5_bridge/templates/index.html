@@ -40,6 +40,7 @@
                     <div style="display: flex;">
                         <span class="tab active" data-tab="active">Market Orders</span>
                         <span class="tab" data-tab="history">History</span>
+                        <span class="tab" data-tab="log">Trading Log</span>
                     </div>
                     <div class="filter-group" id="tracker-filters" style="display: flex; gap: 2px; align-items: center;">
                         <span style="font-size: 10px; color: var(--text-muted); margin-right: 4px;">Filter:</span>
@@ -65,6 +66,7 @@
                         </tbody>
                     </table>
                 </div>
+                {% include 'trading_log.html' %}
             </section>
 
             <!-- Logs Section -->
@@ -133,6 +135,7 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="/static/main.js"></script>
 </body>
 </html>

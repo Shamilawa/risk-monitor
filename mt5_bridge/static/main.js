@@ -2,7 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Theme Toggling ---
     const themeBtn = document.getElementById('theme-toggle');
     const currentTheme = localStorage.getItem('theme') || 'light';
-    
+
     if (currentTheme === 'dark') {
         document.body.setAttribute('data-theme', 'dark');
         themeBtn.innerText = 'Switch to Light Mode';
@@ -22,6 +22,60 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // --- Tooltip Component ---
+    const tooltip = document.createElement('div');
+    tooltip.className = 'custom-tooltip';
+    document.body.appendChild(tooltip);
+
+    function showTooltip(e, content) {
+        tooltip.innerHTML = content;
+        tooltip.classList.add('visible');
+        moveTooltip(e);
+    }
+
+    function hideTooltip() {
+        tooltip.classList.remove('visible');
+    }
+
+    function moveTooltip(e) {
+        tooltip.style.left = `${e.pageX + 15}px`;
+        tooltip.style.top = `${e.pageY + 15}px`;
+    }
+
+    const logTable = document.getElementById('log-table');
+    if (logTable) {
+        logTable.addEventListener('mouseover', (e) => {
+            const badge = e.target.closest('.profit-badge');
+            if (badge) {
+                const raw = parseFloat(badge.dataset.raw).toFixed(2);
+                const comm = parseFloat(badge.dataset.comm).toFixed(2);
+                const swap = parseFloat(badge.dataset.swap).toFixed(2);
+                const total = parseFloat(badge.dataset.total).toFixed(2);
+
+                const content = `
+                    <div class="tooltip-row"><span>Raw P&L</span><span>${raw}</span></div>
+                    <div class="tooltip-row"><span>Commission</span><span>${comm}</span></div>
+                    <div class="tooltip-row"><span>Swap</span><span>${swap}</span></div>
+                    <div class="tooltip-divider"></div>
+                    <div class="tooltip-row tooltip-total"><span>Total</span><span>${total}</span></div>
+                `;
+                showTooltip(e, content);
+            }
+        });
+
+        logTable.addEventListener('mousemove', (e) => {
+            if (e.target.closest('.profit-badge')) {
+                moveTooltip(e);
+            }
+        });
+
+        logTable.addEventListener('mouseout', (e) => {
+            if (e.target.closest('.profit-badge')) {
+                hideTooltip();
+            }
+        });
+    }
+
     // --- UI Elements ---
     const webhookInput = document.getElementById('webhook-url');
     const copyBtn = document.getElementById('copy-btn');
@@ -29,7 +83,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const trackerTbody = document.getElementById('tracker-tbody');
     const mt5StatusIcon = document.getElementById('mt5-status-icon');
     const mt5StatusText = document.getElementById('mt5-status-text');
-    
+
     const modalOverlay = document.getElementById('trade-modal');
     const modalActionSymbol = document.getElementById('modal-action-symbol');
     const modalInfoGrid = document.getElementById('modal-info-grid');
@@ -44,6 +98,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let currentTradePayload = null;
     fetchTracker();
+    fetchInstances();
 
     // Copy Button
     copyBtn.addEventListener('click', () => {
@@ -60,7 +115,7 @@ document.addEventListener('DOMContentLoaded', () => {
     eventSource.addEventListener('log', (e) => { appendLog(e.data); });
     eventSource.addEventListener('ngrok_url', (e) => { webhookInput.value = e.data; });
     eventSource.addEventListener('tracker_update', (e) => { fetchTracker(); });
-    
+
     eventSource.addEventListener('mt5_status', (e) => {
         try {
             const status = JSON.parse(e.data);
@@ -90,14 +145,14 @@ document.addEventListener('DOMContentLoaded', () => {
     function appendLog(message) {
         const div = document.createElement('div');
         div.className = 'log-line';
-        
+
         let levelClass = 'info';
         if (message.includes('[ERROR]')) levelClass = 'error';
         if (message.includes('[WARNING]')) levelClass = 'warning';
-        
+
         div.classList.add(levelClass);
         div.innerText = message;
-        
+
         logBox.appendChild(div);
         if (logBox.childElementCount > 200) {
             logBox.removeChild(logBox.firstChild);
@@ -112,6 +167,209 @@ document.addEventListener('DOMContentLoaded', () => {
             .then(res => res.json())
             .then(data => { renderTrackerTable(data); })
             .catch(err => console.error("Error fetching tracker:", err));
+    }
+
+    function fetchPerformance() {
+        const logFilter = document.getElementById('log-instance-filter');
+        const instId = logFilter ? logFilter.value : 'all';
+        fetch(`/api/performance?instance_id=${instId}`)
+            .then(res => res.json())
+            .then(data => {
+                renderPerformance(data);
+            })
+            .catch(err => console.error("Error fetching performance:", err));
+    }
+
+    function renderPerformance(data) {
+        try {
+            console.log("Rendering performance data:", data);
+            
+            if (!data.metrics) {
+                console.error("No metrics in data");
+                return;
+            }
+
+            const totalProfitEl = document.getElementById('metric-total-profit');
+            const winRateEl = document.getElementById('metric-win-rate');
+            const totalTradesEl = document.getElementById('metric-total-trades');
+            const rrRatioEl = document.getElementById('metric-rr-ratio');
+            const rawProfitEl = document.getElementById('metric-raw-profit');
+
+            if (totalProfitEl) totalProfitEl.innerText = `$${(data.metrics.total_profit || 0).toFixed(2)}`;
+            if (winRateEl) winRateEl.innerText = `${(data.metrics.win_rate || 0).toFixed(1)}%`;
+            if (totalTradesEl) totalTradesEl.innerText = data.metrics.total_trades || 0;
+
+            // Calculate new metrics
+            let totalRawProfit = 0;
+            let winningProfits = 0;
+            let losingProfits = 0;
+            let winCount = 0;
+            let lossCount = 0;
+
+            if (data.trades) {
+                data.trades.forEach(t => {
+                    totalRawProfit += t.raw_profit || 0;
+                    if (t.profit > 0) {
+                        winningProfits += t.profit;
+                        winCount++;
+                    } else if (t.profit < 0) {
+                        losingProfits += Math.abs(t.profit);
+                        lossCount++;
+                    }
+                });
+            }
+
+            const avgWin = winCount > 0 ? winningProfits / winCount : 0;
+            const avgLoss = lossCount > 0 ? losingProfits / lossCount : 0;
+            const rrRatio = avgLoss > 0 ? (avgWin / avgLoss).toFixed(2) : "N/A";
+
+            if (rrRatioEl) rrRatioEl.innerText = `1:${rrRatio}`;
+            if (rawProfitEl) rawProfitEl.innerText = `$${totalRawProfit.toFixed(2)}`;
+
+            if (totalProfitEl) {
+                if (data.metrics.total_profit > 0) {
+                    totalProfitEl.style.color = 'var(--color-buy)';
+                } else if (data.metrics.total_profit < 0) {
+                    totalProfitEl.style.color = 'var(--color-sell)';
+                } else {
+                    totalProfitEl.style.color = 'var(--text-main)';
+                }
+            }
+
+            if (rawProfitEl) {
+                if (totalRawProfit > 0) {
+                    rawProfitEl.style.color = 'var(--color-buy)';
+                } else if (totalRawProfit < 0) {
+                    rawProfitEl.style.color = 'var(--color-sell)';
+                } else {
+                    rawProfitEl.style.color = 'var(--text-main)';
+                }
+            }
+
+            const tbody = document.getElementById('log-tbody');
+            if (!tbody) return;
+            
+            tbody.innerHTML = '';
+
+            if (!data.trades || data.trades.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">No trades found. Click Sync to fetch.</td></tr>';
+                return;
+            }
+
+            data.trades.forEach(t => {
+                const tr = document.createElement('tr');
+                const date = new Date(t.time * 1000);
+                const timeStr = date.toLocaleString();
+                const profitClass = t.profit > 0 ? 'bdg-buy' : t.profit < 0 ? 'bdg-sell' : 'bdg-cancel';
+
+                tr.innerHTML = `
+                    <td>${timeStr}</td>
+                    <td>${t.instance_name}</td>
+                    <td>${t.symbol}</td>
+                    <td><span class="badge-dense ${t.type === 'BUY' ? 'bdg-buy' : 'bdg-sell'}">${t.type}</span></td>
+                    <td>${t.volume}</td>
+                    <td><span class="badge-dense ${profitClass} profit-badge" data-raw="${t.raw_profit || 0}" data-comm="${t.commission || 0}" data-swap="${t.swap || 0}" data-total="${t.profit}">${t.profit.toFixed(2)}</span></td>
+                    <td>${t.magic}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+            
+            // Render Charts
+            renderCharts(data.trades);
+        } catch (error) {
+            console.error("Error in renderPerformance:", error);
+        }
+    }
+
+    function renderCharts(trades) {
+        if (!trades || trades.length === 0) return;
+
+        // Sort trades by time ascending for the curve
+        const sortedTrades = [...trades].sort((a, b) => a.time - b.time);
+
+        let cumulativeProfit = 0;
+        const equityData = [];
+        const labels = [];
+        const drawdownData = [];
+        let peak = 0;
+
+        sortedTrades.forEach((t, index) => {
+            cumulativeProfit += t.profit;
+            equityData.push(cumulativeProfit);
+            labels.push(new Date(t.time * 1000).toLocaleDateString());
+
+            if (cumulativeProfit > peak) {
+                peak = cumulativeProfit;
+            }
+            const dd = peak - cumulativeProfit;
+            drawdownData.push(-dd); // Store as negative value for drop
+        });
+
+        // Render Equity Chart
+        const equityCtx = document.getElementById('equity-chart');
+        if (equityCtx) {
+            const ctx = equityCtx.getContext('2d');
+            if (window.equityChartInstance) window.equityChartInstance.destroy();
+            
+            window.equityChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Equity',
+                        data: equityData,
+                        borderColor: '#1976d2',
+                        backgroundColor: 'rgba(25, 118, 210, 0.1)',
+                        fill: true,
+                        tension: 0.1,
+                        pointRadius: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { display: false },
+                        y: { grid: { color: 'rgba(255,255,255,0.05)' } }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+        }
+
+        // Render Drawdown Chart
+        const ddCtx = document.getElementById('drawdown-chart');
+        if (ddCtx) {
+            const ctx = ddCtx.getContext('2d');
+            if (window.drawdownChartInstance) window.drawdownChartInstance.destroy();
+            
+            window.drawdownChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Drawdown',
+                        data: drawdownData,
+                        backgroundColor: 'rgba(211, 47, 47, 0.5)',
+                        borderColor: '#d32f2f',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { display: false },
+                        y: { grid: { color: 'rgba(255,255,255,0.05)' } }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+        }
     }
 
     function toggleNode(nodeId) {
@@ -133,7 +391,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ id: tradeId })
             }).then(res => res.json()).then(data => {
-                if(data.status !== 'success') {
+                if (data.status !== 'success') {
                     alert("Retry failed: " + (data.error || "Unknown"));
                 }
                 fetchTracker();
@@ -143,7 +401,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             return;
         }
-        
+
         const toggleRow = e.target.closest('.tree-toggle');
         if (toggleRow) {
             const nodeId = toggleRow.getAttribute('data-node-id');
@@ -164,30 +422,72 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // Log Sync Button
+    const btnSyncLog = document.getElementById('btn-sync-log');
+    if (btnSyncLog) {
+        btnSyncLog.addEventListener('click', () => {
+            btnSyncLog.innerText = "Syncing...";
+            btnSyncLog.disabled = true;
+            fetch('/api/sync_log', { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    alert(`Sync complete! Synced ${data.synced} new deals.`);
+                    btnSyncLog.innerText = "Sync Trades";
+                    btnSyncLog.disabled = false;
+                    fetchPerformance();
+                })
+                .catch(err => {
+                    console.error("Sync error:", err);
+                    btnSyncLog.innerText = "Sync Trades";
+                    btnSyncLog.disabled = false;
+                    alert("Sync failed: " + err);
+                });
+        });
+    }
+
+    // Log Instance Filter
+    const logInstanceFilter = document.getElementById('log-instance-filter');
+    if (logInstanceFilter) {
+        logInstanceFilter.addEventListener('change', () => {
+            fetchPerformance();
+        });
+    }
+
     const tabs = document.querySelectorAll('.grid-section .section-toolbar .tab');
-    
+
     tabs.forEach(tab => {
         tab.addEventListener('click', () => {
             tabs.forEach(t => t.classList.remove('active'));
             tab.classList.add('active');
             currentTab = tab.getAttribute('data-tab');
-            
-            const filterGroup = document.querySelector('.grid-section .filter-group');
-            if (filterGroup) {
-                if (currentTab === 'history') {
-                    filterGroup.style.display = 'none';
-                } else {
-                    filterGroup.style.display = 'flex';
+
+            const filterGroup = document.getElementById('tracker-filters');
+            const mainTableContainer = document.querySelector('.grid-section > .table-container');
+            const logContainer = document.getElementById('trading-log-container');
+
+            if (currentTab === 'log') {
+                if (filterGroup) filterGroup.style.display = 'none';
+                if (mainTableContainer) mainTableContainer.style.display = 'none';
+                if (logContainer) logContainer.style.display = 'flex';
+                fetchPerformance();
+            } else {
+                if (filterGroup) {
+                    if (currentTab === 'history') {
+                        filterGroup.style.display = 'none';
+                    } else {
+                        filterGroup.style.display = 'flex';
+                    }
                 }
+                if (mainTableContainer) mainTableContainer.style.display = 'block';
+                if (logContainer) logContainer.style.display = 'none';
+                fetchTracker();
             }
-            
-            fetchTracker();
         });
     });
 
     function getFriendlyStatus(status, isGroup = false) {
         if (!status) return 'Unknown';
-        
+
         if (isGroup) {
             if (status === 'PENDING_ORIGINAL') return 'Original Orders Pending';
             if (status === 'ACTIVE') return 'Original Trades Live';
@@ -212,7 +512,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderTrackerTable(rows) {
         const trackerThead = document.querySelector('#tracker-table thead');
-        
+
         if (currentTab === 'history') {
             trackerThead.innerHTML = `
                 <tr>
@@ -249,7 +549,7 @@ document.addEventListener('DOMContentLoaded', () => {
             for (const [sym, groups] of Object.entries(symbols)) {
                 const symNodeId = `sym_${sym}`;
                 const symExpanded = expandedState[symNodeId] === true; // Default to false (collapsed)
-                
+
                 // Apply Filter to groups
                 const filteredGroups = groups.filter(g => {
                     if (currentFilter === 'all') return true;
@@ -274,13 +574,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     filteredGroups.forEach(g => {
                         const groupNodeId = `grp_${g.id}`;
                         const groupExpanded = expandedState[groupNodeId] === true; // Default to false
-                        
+
                         // Group Row
                         let retryBtn = '';
                         if (g.status === 'FAILED_EXECUTION') {
                             retryBtn = `<button class="btn-toolbar btn-retry" data-id="${g.id}" style="padding: 2px 6px; font-size: 10px; margin-left: 5px;">Retry</button>`;
                         }
-                        
+
                         trackerTbody.innerHTML += `
                             <tr class="tree-toggle" data-node-id="${groupNodeId}">
                                 <td class="indent-1">
@@ -350,7 +650,7 @@ document.addEventListener('DOMContentLoaded', () => {
             rows.forEach(g => {
                 const groupNodeId = `grp_hist_${g.magic_number}`;
                 const groupExpanded = expandedState[groupNodeId] === true;
-                
+
                 // Group Row (5 columns)
                 trackerTbody.innerHTML += `
                     <tr class="tree-toggle" data-node-id="${groupNodeId}">
@@ -430,18 +730,18 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Modal Logic ---
     function showTradeModal(data) {
         currentTradePayload = data;
-        
+
         const action = (data.action || '').toUpperCase();
         const symbol = data.symbol || '';
-        
+
         modalActionSymbol.innerText = `${action} ${symbol}`;
         modalActionSymbol.className = `action-banner ${action === 'BUY' ? 'buy' : 'sell'}`;
-        
+
         modalInfoGrid.innerHTML = '';
         function addRow(label, value) {
             modalInfoGrid.innerHTML += `<tr><td>${label}</td><td>${value}</td></tr>`;
         }
-        
+
         const entryStr = data.entry > 0 ? `${data.entry} (Limit/Stop)` : "Market";
         addRow("Entry Level", entryStr);
         addRow("Stop Loss", data.sl);
@@ -469,18 +769,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     btnExecute.addEventListener('click', () => {
         if (!currentTradePayload) return;
-        
+
         fetch('/api/execute_trade', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(currentTradePayload)
         })
-        .then(res => res.json())
-        .then(data => {
-            modalOverlay.classList.remove('active');
-            currentTradePayload = null;
-        })
-        .catch(err => console.error("Execute error:", err));
+            .then(res => res.json())
+            .then(data => {
+                modalOverlay.classList.remove('active');
+                currentTradePayload = null;
+            })
+            .catch(err => console.error("Execute error:", err));
     });
 
     btnAbort.addEventListener('click', () => {
@@ -491,7 +791,7 @@ document.addEventListener('DOMContentLoaded', () => {
             })
             .catch(err => console.error("Abort error:", err));
     });
-    
+
     // --- Settings Modal Logic ---
     const btnSettings = document.getElementById('btn-settings');
     const settingsModal = document.getElementById('settings-modal');
@@ -518,11 +818,26 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function fetchInstances() {
+        const instanceList = document.getElementById('instance-list');
         if (!instanceList) return;
         fetch('/api/instances')
             .then(res => res.json())
             .then(data => {
                 instanceList.innerHTML = '';
+
+                const logFilter = document.getElementById('log-instance-filter');
+                if (logFilter) {
+                    const currentVal = logFilter.value;
+                    logFilter.innerHTML = '<option value="all">All Instances</option>';
+                    data.forEach(inst => {
+                        const opt = document.createElement('option');
+                        opt.value = inst.id;
+                        opt.innerText = inst.name;
+                        logFilter.appendChild(opt);
+                    });
+                    logFilter.value = currentVal || 'all';
+                }
+
                 if (data.length === 0) {
                     instanceList.innerHTML = '<div style="color: var(--text-muted); font-size: 12px; padding: 10px;">No instances configured. Executing on default MT5.</div>';
                     return;
@@ -569,8 +884,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }).then(() => {
                 newInstanceName.value = '';
                 newInstancePath.value = '';
-                if(newInstanceRisk) newInstanceRisk.value = '100';
-                if(newInstanceSuffix) newInstanceSuffix.value = '';
+                if (newInstanceRisk) newInstanceRisk.value = '100';
+                if (newInstanceSuffix) newInstanceSuffix.value = '';
                 fetchInstances();
             });
         });

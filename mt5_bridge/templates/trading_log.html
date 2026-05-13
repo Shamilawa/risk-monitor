@@ -1,0 +1,73 @@
+<div id="trading-log-container" class="tab-content" style="display: none; flex-direction: column; flex-grow: 1; min-height: 0;">
+    <!-- Toolbar for Log -->
+    <div class="section-toolbar" style="display: flex; justify-content: space-between; align-items: center; padding: 4px;">
+        <div class="filter-group" style="display: flex; gap: 4px; align-items: center;">
+            <label for="log-instance-filter" style="font-size: 10px; color: var(--text-muted);">Instance:</label>
+            <select id="log-instance-filter" style="background: var(--bg-panel); border: 1px solid var(--border-color); color: var(--text-main); font-size: 11px; padding: 2px;">
+                <option value="all">All Instances</option>
+                <!-- Options populated by JS -->
+            </select>
+        </div>
+        <button id="btn-sync-log" class="btn-toolbar" style="background: var(--color-active); color: white; border-color: var(--color-active);">Sync Trades</button>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="summary-cards">
+        <div class="metric-card" style="border-left-color: var(--color-active);">
+            <div class="metric-label">Total Profit</div>
+            <div id="metric-total-profit" class="metric-value">$0.00</div>
+        </div>
+        <div class="metric-card" style="border-left-color: var(--color-pending);">
+            <div class="metric-label">Win Rate</div>
+            <div id="metric-win-rate" class="metric-value">0%</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Total Trades</div>
+            <div id="metric-total-trades" class="metric-value">0</div>
+        </div>
+        <div class="metric-card" style="border-left-color: var(--color-buy);">
+            <div class="metric-label">Avg R:R</div>
+            <div id="metric-rr-ratio" class="metric-value">1:0</div>
+        </div>
+        <div class="metric-card" style="border-left-color: var(--color-active);">
+            <div class="metric-label">Raw Profit</div>
+            <div id="metric-raw-profit" class="metric-value">$0.00</div>
+        </div>
+    </div>
+
+    <!-- Charts Section -->
+    <div class="charts-container" style="display: flex; gap: 8px; padding: 8px; height: 300px;">
+        <div class="chart-box" style="flex: 1; background: var(--bg-panel); border: 1px solid var(--border-color); padding: 8px; position: relative;">
+            <div class="metric-label" style="font-size: 10px; color: var(--text-muted); margin-bottom: 4px;">Equity Curve</div>
+            <div style="position: relative; height: 260px;">
+                <canvas id="equity-chart"></canvas>
+            </div>
+        </div>
+        <div class="chart-box" style="flex: 1; background: var(--bg-panel); border: 1px solid var(--border-color); padding: 8px; position: relative;">
+            <div class="metric-label" style="font-size: 10px; color: var(--text-muted); margin-bottom: 4px;">Drawdown</div>
+            <div style="position: relative; height: 260px;">
+                <canvas id="drawdown-chart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Data Grid -->
+    <div class="table-container" style="flex-grow: 1; overflow: auto; min-height: 0;">
+        <table id="log-table" class="data-grid">
+            <thead>
+                <tr>
+                    <th style="width: 20%;">Time</th>
+                    <th style="width: 15%;">Instance</th>
+                    <th style="width: 15%;">Symbol</th>
+                    <th style="width: 10%;">Action</th>
+                    <th style="width: 10%;">Volume</th>
+                    <th style="width: 10%;">Profit</th>
+                    <th style="width: 10%;">Magic</th>
+                </tr>
+            </thead>
+            <tbody id="log-tbody">
+                <!-- Populated by JS -->
+            </tbody>
+        </table>
+    </div>
+</div>

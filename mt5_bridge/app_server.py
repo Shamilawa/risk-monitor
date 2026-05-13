@@ -260,6 +260,33 @@ def init_db():
         )
     ''')
     
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS trading_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instance_id INTEGER,
+            ticket INTEGER,
+            symbol TEXT,
+            type INTEGER,
+            volume REAL,
+            profit REAL,
+            time INTEGER,
+            magic INTEGER,
+            comment TEXT,
+            UNIQUE(instance_id, ticket)
+        )
+    ''')
+    
+    # Add columns for tooltip if they don't exist
+    try:
+        c.execute("ALTER TABLE trading_log ADD COLUMN commission REAL DEFAULT 0")
+    except Exception: pass
+    try:
+        c.execute("ALTER TABLE trading_log ADD COLUMN swap REAL DEFAULT 0")
+    except Exception: pass
+    try:
+        c.execute("ALTER TABLE trading_log ADD COLUMN raw_profit REAL DEFAULT 0")
+    except Exception: pass
+    
     conn.commit()
     conn.close()
 
@@ -870,6 +897,154 @@ def api_retry_trade():
 def api_abort_trade():
     logging.info("User clicked ABORT.")
     return jsonify({"status": "aborted"})
+
+@flask_app.route('/api/sync_log', methods=['POST'])
+def api_sync_log():
+    logging.info("Syncing trading log from MT5 instances...")
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    c.execute("SELECT id, name, path FROM instances")
+    instances = c.fetchall()
+    
+    if not instances:
+        instances = [(None, "Default", None)]
+        
+    total_synced = 0
+    for inst in instances:
+        inst_id, inst_name, inst_path = inst
+        
+        if inst_path:
+            initialized = mt5.initialize(path=inst_path)
+        else:
+            initialized = mt5.initialize()
+            
+        if not initialized:
+            logging.error(f"Failed to initialize MT5 for instance {inst_name}")
+            continue
+            
+        import datetime
+        from_date = datetime.datetime(2000, 1, 1)
+        to_date = datetime.datetime.now() + datetime.timedelta(days=1)
+        
+        deals = mt5.history_deals_get(from_date, to_date)
+        if deals is None:
+            logging.error(f"Failed to get history deals for {inst_name}: {mt5.last_error()}")
+            continue
+            
+        logging.info(f"Fetched {len(deals)} deals from {inst_name}")
+        
+        # Clear existing logs for this instance to ensure a clean sync
+        c.execute("DELETE FROM trading_log WHERE instance_id = ?", (inst_id,))
+        
+        for deal in deals:
+            # Filter for deals that are trades (buy/sell)
+            if deal.type not in (0, 1):
+                continue
+                
+            # Filter for deals that are exits (OUT/INOUT/OUT_BY)
+            # entry: 0=IN, 1=OUT, 2=INOUT, 3=OUT_BY
+            # We only want the closing deals because they carry the profit and represent a completed trade.
+            if deal.entry == 0:
+                continue
+                
+            # Fetch ALL deals for this position to sum up profit/commission/swap
+            # This handles cases where commission is charged on entry and exit separately.
+            pos_deals = mt5.history_deals_get(position=deal.position_id)
+            if pos_deals:
+                total_profit = sum(d.profit for d in pos_deals)
+                total_comm = sum(d.commission for d in pos_deals)
+                total_swap = sum(d.swap for d in pos_deals)
+                net_profit = total_profit + total_comm + total_swap
+                logging.info(f"Position {deal.position_id}: Profit={total_profit}, Comm={total_comm}, Swap={total_swap}, Net={net_profit}")
+            else:
+                total_profit = deal.profit
+                total_comm = deal.commission
+                total_swap = deal.swap
+                net_profit = deal.profit + deal.commission + deal.swap
+                logging.info(f"Deal {deal.ticket} (no pos deals): Profit={deal.profit}, Comm={deal.commission}, Swap={deal.swap}, Net={net_profit}")
+            
+            try:
+                c.execute('''
+                    INSERT INTO trading_log (
+                        instance_id, ticket, symbol, type, volume, profit, time, magic, comment, commission, swap, raw_profit
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    inst_id, deal.ticket, deal.symbol, deal.type, deal.volume, net_profit, deal.time, deal.magic, deal.comment, total_comm, total_swap, total_profit
+                ))
+                total_synced += 1
+            except Exception as e:
+                logging.error(f"Error inserting deal {deal.ticket}: {e}")
+                
+    conn.commit()
+    conn.close()
+    logging.info(f"Sync complete. Synced {total_synced} new deals.")
+    return jsonify({"status": "success", "synced": total_synced})
+
+@flask_app.route('/api/performance', methods=['GET'])
+def api_performance():
+    inst_id = request.args.get('instance_id')
+    
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    
+    query = "SELECT l.id, l.instance_id, i.name, l.ticket, l.symbol, l.type, l.volume, l.profit, l.time, l.magic, l.comment, l.commission, l.swap, l.raw_profit FROM trading_log l LEFT JOIN instances i ON l.instance_id = i.id"
+    params = []
+    
+    if inst_id and inst_id != 'all':
+        query += " WHERE l.instance_id = ?"
+        params.append(inst_id)
+        
+    query += " ORDER BY l.time DESC"
+    
+    c.execute(query, params)
+    rows = c.fetchall()
+    
+    trades = []
+    total_profit = 0
+    profitable_trades = 0
+    total_trades = 0
+    
+    for r in rows:
+        trades.append({
+            "id": r[0],
+            "instance_id": r[1],
+            "instance_name": r[2] or "Default",
+            "ticket": r[3],
+            "symbol": r[4],
+            # Invert type because we are showing exit deals!
+            # If exit is BUY (0), the trade was SELL.
+            # If exit is SELL (1), the trade was BUY.
+            "type": "SELL" if r[5] == 0 else "BUY" if r[5] == 1 else "BALANCE" if r[5] == 2 else str(r[5]),
+            "volume": r[6],
+            "profit": r[7],
+            "time": r[8],
+            "magic": r[9],
+            "comment": r[10],
+            "commission": r[11],
+            "swap": r[12],
+            "raw_profit": r[13]
+        })
+        
+        # Only count deals with non-zero profit for metrics to avoid counting double
+        # In MT5, profit is only non-zero on deals that close a position.
+        if r[7] != 0:
+            total_profit += r[7]
+            if r[7] > 0:
+                profitable_trades += 1
+            total_trades += 1
+        
+    win_rate = (profitable_trades / total_trades * 100) if total_trades > 0 else 0
+    
+    conn.close()
+    
+    return jsonify({
+        "metrics": {
+            "total_profit": round(total_profit, 2),
+            "win_rate": round(win_rate, 2),
+            "total_trades": total_trades
+        },
+        "trades": trades
+    })
 
 def main():
     logging.info("Starting Premium MT5 Bridge Server...")
