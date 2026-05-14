@@ -97,6 +97,9 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentTab = 'active'; // 'active', 'history'
 
     let currentTradePayload = null;
+    let signalQueue = [];
+    let modalIsOpen = false;
+    const alertAudio = new Audio('/signal_alert.wav');
     fetchTracker();
     fetchInstances();
 
@@ -136,7 +139,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
     eventSource.addEventListener('trade_signal', (e) => {
         const data = JSON.parse(e.data);
-        showTradeModal(data);
+        signalQueue.push(data);
+        
+        if (modalIsOpen) {
+            // Play sound for concurrent signal since modal won't "open" again
+            alertAudio.currentTime = 0;
+            alertAudio.play().catch(e => console.error("Error playing sound:", e));
+        }
+        
+        const badge = document.getElementById('modal-signal-count');
+        if (badge && modalIsOpen) {
+            if (signalQueue.length > 1) {
+                badge.innerText = `${signalQueue.length} Signals`;
+                badge.style.display = 'inline-block';
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+        
+        if (!modalIsOpen) {
+            showNextSignal();
+        }
     });
 
     eventSource.onerror = (err) => { console.error("SSE Error:", err); };
@@ -402,6 +425,25 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        if (e.target.classList.contains('btn-place-recovery')) {
+            const tradeId = e.target.getAttribute('data-id');
+            e.target.innerText = "Placing...";
+            fetch('/api/place_recovery_trade', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: tradeId })
+            }).then(res => res.json()).then(data => {
+                if (data.status !== 'success') {
+                    alert("Failed to place recovery trade: " + (data.error || "Unknown"));
+                }
+                fetchTracker();
+            }).catch(err => {
+                alert("Error placing recovery trade: " + err);
+                fetchTracker();
+            });
+            return;
+        }
+
         const toggleRow = e.target.closest('.tree-toggle');
         if (toggleRow) {
             const nodeId = toggleRow.getAttribute('data-node-id');
@@ -632,13 +674,18 @@ document.addEventListener('DOMContentLoaded', () => {
                             else if (g.status === 'CANCELLED') recStatus = 'CANCELLED';
                             else if (g.recovery_ticket) recStatus = g.status === 'ACTIVE' ? 'PENDING (Placed)' : g.status;
 
+                            let placeBtn = '';
+                            if (g.status === 'ACTIVE' && !g.recovery_ticket) {
+                                placeBtn = `<button class="btn-toolbar btn-place-recovery" data-id="${g.id}" style="padding: 2px 6px; font-size: 10px; margin-left: 5px;">Place</button>`;
+                            }
+
                             trackerTbody.innerHTML += `
                                 <tr>
                                     <td class="indent-2">Recovery</td>
                                     <td></td>
                                     <td>${g.recovery_ticket || 'N/A'}</td>
                                     <td>Recovery</td>
-                                    <td><span class="badge-dense ${getBadgeClass(recStatus)}">${getFriendlyStatus(recStatus, false)}</span></td>
+                                    <td><span class="badge-dense ${getBadgeClass(recStatus)}">${getFriendlyStatus(recStatus, false)}</span>${placeBtn}</td>
                                 </tr>
                             `;
                         }
@@ -767,8 +814,38 @@ document.addEventListener('DOMContentLoaded', () => {
         modalOverlay.classList.add('active');
     }
 
+    function showNextSignal() {
+        if (signalQueue.length === 0) {
+            modalIsOpen = false;
+            const badge = document.getElementById('modal-signal-count');
+            if (badge) badge.style.display = 'none';
+            modalOverlay.classList.remove('active');
+            return;
+        }
+
+        modalIsOpen = true;
+        const data = signalQueue[0];
+        showTradeModal(data);
+        
+        const badge = document.getElementById('modal-signal-count');
+        if (badge) {
+            if (signalQueue.length > 1) {
+                badge.innerText = `${signalQueue.length} Signals`;
+                badge.style.display = 'inline-block';
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+
+        alertAudio.currentTime = 0;
+        alertAudio.play().catch(e => console.error("Error playing sound:", e));
+    }
+
     btnExecute.addEventListener('click', () => {
         if (!currentTradePayload) return;
+
+        btnExecute.disabled = true;
+        btnExecute.innerText = "Executing...";
 
         fetch('/api/execute_trade', {
             method: 'POST',
@@ -777,17 +854,27 @@ document.addEventListener('DOMContentLoaded', () => {
         })
             .then(res => res.json())
             .then(data => {
-                modalOverlay.classList.remove('active');
                 currentTradePayload = null;
+                btnExecute.disabled = false;
+                btnExecute.innerText = "Execute";
+                
+                signalQueue.shift();
+                showNextSignal();
             })
-            .catch(err => console.error("Execute error:", err));
+            .catch(err => {
+                console.error("Execute error:", err);
+                alert("Execution failed: " + err);
+                btnExecute.disabled = false;
+                btnExecute.innerText = "Execute";
+            });
     });
 
     btnAbort.addEventListener('click', () => {
         fetch('/api/abort_trade', { method: 'POST' })
             .then(() => {
-                modalOverlay.classList.remove('active');
                 currentTradePayload = null;
+                signalQueue.shift();
+                showNextSignal();
             })
             .catch(err => console.error("Abort error:", err));
     });

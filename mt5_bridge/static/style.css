@@ -369,6 +369,14 @@ body {
     filter: brightness(1.1);
 }
 
+.btn-action:disabled {
+    background: var(--bg-toolbar);
+    color: var(--text-muted);
+    border-color: var(--border-color);
+    cursor: not-allowed;
+    filter: none !important;
+}
+
 /* Tree Grid Interactions */
 .tree-toggle {
     cursor: pointer;

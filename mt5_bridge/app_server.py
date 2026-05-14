@@ -936,6 +936,55 @@ def api_retry_trade():
     notify_clients("tracker_update", "update")
     return jsonify(res)
 
+@flask_app.route('/api/place_recovery_trade', methods=['POST'])
+def api_place_recovery_trade():
+    data = request.json
+    trade_id = data.get('id')
+    if not trade_id:
+        return jsonify({"error": "Trade ID required"}), 400
+        
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    c.execute("""
+        SELECT t.magic_number, t.symbol, t.rec_action, t.rec_entry, t.rec_sl, t.rec_tp, t.rec_volume, i.path, i.symbol_mapping, i.symbol_suffix
+        FROM trade_groups t
+        LEFT JOIN instances i ON t.instance_id = i.id
+        WHERE t.id = ? AND t.status = 'ACTIVE' AND (t.recovery_ticket IS NULL OR t.recovery_ticket = 0)
+    """, (trade_id,))
+    row = c.fetchone()
+    
+    if not row:
+        conn.close()
+        return jsonify({"error": "Trade not found, not active, or recovery already placed"}), 404
+        
+    magic_number, symbol, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, inst_path, symbol_mapping, symbol_suffix = row
+    
+    # Apply symbol mapping if exists
+    actual_symbol = symbol
+    if symbol_mapping:
+        try:
+            import json
+            mapping = json.loads(symbol_mapping)
+            if symbol in mapping:
+                actual_symbol = mapping[symbol]
+        except Exception as e:
+            logging.error(f"Error parsing symbol mapping for recovery: {e}")
+            
+    new_rec_ticket = execute_trade(actual_symbol, rec_action, rec_sl, rec_tp, rec_volume, rec_entry, inst_path, magic_number, "Recovery", symbol_suffix)
+    
+    if new_rec_ticket:
+        c.execute("UPDATE trade_groups SET recovery_ticket=? WHERE id=?", (new_rec_ticket, trade_id))
+        conn.commit()
+        logging.info(f"Recovery trade placed successfully for Trade ID {trade_id}, Ticket: {new_rec_ticket}")
+        res = {"status": "success", "ticket": new_rec_ticket}
+    else:
+        logging.error(f"Failed to place recovery trade for Trade ID {trade_id}")
+        res = {"status": "failed", "error": "Execution failed"}
+        
+    conn.close()
+    notify_clients("tracker_update", "update")
+    return jsonify(res)
+
 @flask_app.route('/api/abort_trade', methods=['POST'])
 def api_abort_trade():
     logging.info("User clicked ABORT.")
@@ -1088,6 +1137,13 @@ def api_performance():
         },
         "trades": trades
     })
+
+@flask_app.route('/signal_alert.wav')
+def signal_alert():
+    try:
+        return Response(open('signal_alert.wav', 'rb').read(), mimetype='audio/wav')
+    except FileNotFoundError:
+        return jsonify({"error": "File not found"}), 404
 
 def main():
     logging.info("Starting Premium MT5 Bridge Server...")

@@ -86,7 +86,10 @@
     <div id="trade-modal" class="modal-overlay">
         <div class="modal">
             <div class="modal-header">
-                <span class="modal-title">Trade Confirmation Request</span>
+                <div style="display: flex; align-items: center;">
+                    <span class="modal-title">Trade Confirmation Request</span>
+                    <span id="modal-signal-count" class="badge-dense bdg-pending" style="margin-left: 10px; display: none;"></span>
+                </div>
             </div>
             <div class="modal-body">
                 <div class="action-banner" id="modal-action-symbol">BUY EURUSD</div>
@@ -100,8 +103,8 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button id="btn-execute" class="btn btn-action execute">Execute</button>
                 <button id="btn-abort" class="btn btn-action abort">Abort</button>
+                <button id="btn-execute" class="btn btn-action execute">Execute</button>
             </div>
         </div>
     </div>
