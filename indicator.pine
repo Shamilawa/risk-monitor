@@ -1,5 +1,5 @@
 //@version=6
-indicator("Pro: Flow & Value (Custom Names)", overlay=true, max_labels_count=500, max_lines_count=500)
+indicator("Pro: Flow & Value Pullback (MT5 Webhook Connector)", overlay=true, max_labels_count=500, max_lines_count=500)
 
 // -----------------------------------------------------------------------------
 // 1. SETUP & INPUTS
@@ -200,7 +200,7 @@ if (buy_a1 or buy_a2) and barstate.isconfirmed
     string csv_msg = "buy," + actual_s + "," + str.tostring(entry, format.mintick) + "," + str.tostring(risk_usd) + "," + str.tostring(sl_level, format.mintick) + "," + str.tostring(tp1, format.mintick) + "," + str.tostring(tp2, format.mintick)
     
     // JSON for automated webhook
-    string json_msg = '{"action": "buy", "symbol": "' + actual_s + '", "entry": ' + str.tostring(entry) + ', "sl": ' + str.tostring(sl_level) + ', "tp1": ' + str.tostring(tp1) + ', "tp2": ' + str.tostring(tp2) + ', "risk_usd": ' + str.tostring(risk_usd) + '}'
+    string json_msg = '{"action": "buy", "symbol": "' + actual_s + '", "entry": ' + str.tostring(entry) + ', "sl": ' + str.tostring(sl_level) + ', "tp1": ' + str.tostring(tp1) + ', "tp2": ' + str.tostring(tp2) + ', "risk_usd": ' + str.tostring(risk_usd) + ', "timeframe": "' + timeframe.period + '"}'
     
     string tt  = "Buy " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + "\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + "\nTP2 (1.3R): " + str.tostring(tp2, format.mintick)
     
@@ -235,7 +235,7 @@ if (sell_a1 or sell_a2) and barstate.isconfirmed
     string csv_msg = "sell," + actual_s + "," + str.tostring(entry, format.mintick) + "," + str.tostring(risk_usd) + "," + str.tostring(sl_level, format.mintick) + "," + str.tostring(tp1, format.mintick) + "," + str.tostring(tp2, format.mintick)
     
     // JSON for automated webhook
-    string json_msg = '{"action": "sell", "symbol": "' + actual_s + '", "entry": ' + str.tostring(entry) + ', "sl": ' + str.tostring(sl_level) + ', "tp1": ' + str.tostring(tp1) + ', "tp2": ' + str.tostring(tp2) + ', "risk_usd": ' + str.tostring(risk_usd) + '}'
+    string json_msg = '{"action": "sell", "symbol": "' + actual_s + '", "entry": ' + str.tostring(entry) + ', "sl": ' + str.tostring(sl_level) + ', "tp1": ' + str.tostring(tp1) + ', "tp2": ' + str.tostring(tp2) + ', "risk_usd": ' + str.tostring(risk_usd) + ', "timeframe": "' + timeframe.period + '"}'
     
     string tt  = "Sell " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + "\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + "\nTP2 (1.3R): " + str.tostring(tp2, format.mintick)
     

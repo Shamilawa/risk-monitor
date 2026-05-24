@@ -238,6 +238,16 @@ def init_db():
         c.execute("ALTER TABLE instances ADD COLUMN symbol_mapping TEXT DEFAULT '{}'")
     except sqlite3.OperationalError:
         pass
+        
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN auto_trade INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+        
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN accepted_timeframe TEXT DEFAULT 'all'")
+    except sqlite3.OperationalError:
+        pass
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS trade_groups (
@@ -573,9 +583,9 @@ def api_instances():
     c = conn.cursor()
     
     if request.method == 'GET':
-        c.execute("SELECT id, name, path, risk_usd, symbol_mapping FROM instances ORDER BY id ASC")
+        c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe FROM instances ORDER BY id ASC")
         rows = c.fetchall()
-        instances = [{"id": r[0], "name": r[1], "path": r[2], "risk_usd": r[3], "symbol_mapping": r[4]} for r in rows]
+        instances = [{"id": r[0], "name": r[1], "path": r[2], "risk_usd": r[3], "symbol_mapping": r[4], "auto_trade": r[5], "accepted_timeframe": r[6] or 'all'} for r in rows]
         conn.close()
         return jsonify(instances)
         
@@ -585,15 +595,17 @@ def api_instances():
         path = data.get('path')
         risk_usd = float(data.get('risk_usd', 100.0))
         symbol_mapping = data.get('symbol_mapping', '{}')
+        auto_trade = int(data.get('auto_trade', 0))
+        accepted_timeframe = data.get('accepted_timeframe', 'all')
         if not name or not path:
             conn.close()
             return jsonify({"error": "Name and path required"}), 400
             
-        c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping) VALUES (?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping))
+        c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe) VALUES (?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe))
         conn.commit()
         new_id = c.lastrowid
         conn.close()
-        return jsonify({"id": new_id, "name": name, "path": path, "risk_usd": risk_usd, "symbol_mapping": symbol_mapping}), 201
+        return jsonify({"id": new_id, "name": name, "path": path, "risk_usd": risk_usd, "symbol_mapping": symbol_mapping, "auto_trade": auto_trade, "accepted_timeframe": accepted_timeframe}), 201
         
     elif request.method == 'PUT':
         data = request.json
@@ -602,12 +614,14 @@ def api_instances():
         path = data.get('path')
         risk_usd = float(data.get('risk_usd', 100.0))
         symbol_mapping = data.get('symbol_mapping', '{}')
+        auto_trade = int(data.get('auto_trade', 0))
+        accepted_timeframe = data.get('accepted_timeframe', 'all')
         
         if not instance_id or not name or not path:
             conn.close()
             return jsonify({"error": "ID, name and path required"}), 400
             
-        c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=? WHERE id=?", (name, path, risk_usd, symbol_mapping, instance_id))
+        c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, instance_id))
         conn.commit()
         conn.close()
         return jsonify({"status": "success"}), 200
@@ -684,8 +698,37 @@ def webhook():
     process_signal(data)
     return jsonify({"status": "signal received"}), 200
 
+def is_trade_allowed(instance_id, symbol, action):
+    """
+    Checks if a trade signal in 'action' (BUY/SELL) direction is allowed.
+    Rule: If there is an active trade group for this symbol on this instance
+    in the same direction (action), the new trade is ignored.
+    Opposite direction trades are always allowed even if not hit TP1.
+    
+    NOTE: As soon as a trade hits TP1, the bridge updates its status to 'SUCCESS_TP1_HIT'.
+    Therefore, by querying only 'PENDING_ORIGINAL', 'ACTIVE', and 'RECOVERY_TRIGGERED', 
+    we ensure that once TP1 is hit, the existing trade group is no longer considered blocking, 
+    and a new same-side signal is allowed to execute.
+    """
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    if instance_id is None:
+        c.execute("""
+            SELECT COUNT(*) FROM trade_groups 
+            WHERE instance_id IS NULL AND symbol = ? AND action = ? 
+              AND status IN ('PENDING_ORIGINAL', 'ACTIVE', 'RECOVERY_TRIGGERED')
+        """, (symbol, action.upper()))
+    else:
+        c.execute("""
+            SELECT COUNT(*) FROM trade_groups 
+            WHERE instance_id = ? AND symbol = ? AND action = ? 
+              AND status IN ('PENDING_ORIGINAL', 'ACTIVE', 'RECOVERY_TRIGGERED')
+        """, (instance_id, symbol, action.upper()))
+    count = c.fetchone()[0]
+    conn.close()
+    return count == 0
+
 def process_signal(data):
-    # This replaces the logic that was inside show_trade_popup in app_gui.py
     action = data.get('action', '').upper()
     symbol = data.get('symbol', '')
     try:
@@ -695,20 +738,24 @@ def process_signal(data):
     sl = float(data.get('sl', 0))
     tp1 = float(data.get('tp1', 0))
     tp2 = float(data.get('tp2', 0))
+    signal_timeframe = str(data.get('timeframe', 'all'))
     
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
-    c.execute("SELECT id, name, path, risk_usd, symbol_mapping FROM instances ORDER BY id ASC")
+    c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe FROM instances ORDER BY id ASC")
     instances = c.fetchall()
     conn.close()
     
     if not instances:
-        instances = [(None, "Default", None, 100.0, "{}")]
+        instances = [(None, "Default", None, 100.0, "{}", 0, "all")]
         
-    instance_executions = []
+    auto_results = []
+    manual_executions = []
     
     for inst in instances:
-        inst_id, inst_name, inst_path, risk_usd, symbol_mapping = inst
+        inst_id, inst_name, inst_path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe = inst
+        if not accepted_timeframe:
+            accepted_timeframe = 'all'
         
         # Apply symbol mapping if exists
         actual_symbol = symbol
@@ -761,7 +808,7 @@ def process_signal(data):
             
         rec_volume = calculate_volume(actual_symbol, rec_entry, rec_sl, risk_usd, inst_path, "")
         
-        instance_executions.append({
+        exec_payload = {
             "id": inst_id,
             "name": inst_name,
             "path": inst_path,
@@ -778,16 +825,83 @@ def process_signal(data):
             "rec_sl": rec_sl,
             "rec_tp": rec_tp,
             "rec_volume": rec_volume
-        })
+        }
         
-    logging.info(f"Signal received for {symbol}. Calculated volumes for {len(instance_executions)} instances. Waiting for confirmation in UI...")
+        # Determine if Auto Trade Mode is active for this specific timeframe
+        is_auto = (auto_trade == 1) and (accepted_timeframe == 'all' or accepted_timeframe == signal_timeframe)
+        
+        if auto_trade and not is_auto:
+            logging.info(f"[{inst_name}] Timeframe mismatch (Signal: {signal_timeframe}, Accepted: {accepted_timeframe}). Falling back to manual confirmation.")
+            
+        if is_auto:
+            # Check same-side rule
+            allowed = is_trade_allowed(inst_id, symbol, action)
+            if not allowed:
+                logging.info(f"[{inst_name}] Ignored same-side signal for {symbol} {action} (Active trade exists)")
+                auto_results.append({
+                    "name": inst_name,
+                    "status": "ignored",
+                    "reason": "Active same-side trade exists"
+                })
+                continue
+                
+            # Execute trade automatically
+            magic_number = random.randint(100000, 999999)
+            t1_ticket = None
+            t2_ticket = None
+            
+            if split_trade:
+                t1_ticket = execute_trade(actual_symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", "")
+                t2_ticket = execute_trade(actual_symbol, action, sl, tp2, vol2, entry, inst_path, magic_number, "Orig_TP2", "")
+            else:
+                t1_ticket = execute_trade(actual_symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", "")
+                
+            status = 'PENDING_ORIGINAL' if t1_ticket else 'FAILED_EXECUTION'
+            
+            conn_db = sqlite3.connect('trades.db')
+            c_db = conn_db.cursor()
+            c_db.execute('''
+                INSERT INTO trade_groups (
+                    instance_id, magic_number, symbol, action, entry_price, sl, tp1, tp2, vol1, vol2, split_trade,
+                    trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                inst_id, magic_number, symbol, action, entry, sl, tp1, tp2, vol1, vol2, 1 if split_trade else 0,
+                t1_ticket, t2_ticket, None, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status
+            ))
+            conn_db.commit()
+            conn_db.close()
+            
+            if status == 'FAILED_EXECUTION':
+                logging.error(f"[{inst_name}] Failed to auto-execute. Marked as failed.")
+                auto_results.append({
+                    "name": inst_name,
+                    "status": "failed",
+                    "reason": "MT5 execution failed"
+                })
+            else:
+                logging.info(f"[{inst_name}] Auto-Executed trade group [Magic {magic_number}] (Status: {status}).")
+                auto_results.append({
+                    "name": inst_name,
+                    "status": "executed",
+                    "ticket1": t1_ticket,
+                    "ticket2": t2_ticket,
+                    "success": True
+                })
+                # Trigger Web UI tracker refresh
+                notify_clients("tracker_update", "update")
+        else:
+            # Manual execution required
+            manual_executions.append(exec_payload)
+            
+    logging.info(f"Signal received for {symbol}. Processed executions. Waiting for UI signal routing...")
     
     # Build message and send Telegram notification
-    msg = f"NEW TRADINGVIEW SIGNAL\n\n"
+    msg = f"🔔 NEW TRADINGVIEW SIGNAL\n\n"
     msg += f"Symbol: {symbol}\n"
     msg += f"Action: {action}\n"
     if entry > 0:
-        msg += f"Entry Level: {entry} (Will place Limit/Stop Order)\n"
+        msg += f"Entry Level: {entry} (Limit/Stop Order)\n"
     else:
         msg += f"Entry Level: Market\n"
     msg += f"Stop Loss: {sl}\n"
@@ -795,23 +909,48 @@ def process_signal(data):
     if tp2 != 0:
         msg += f"Take Profit 2: {tp2}\n\n"
         
-    for exec_data in instance_executions:
-        msg += f"Broker: {exec_data['name']}\n"
-        msg += f"Risk: ${exec_data['risk_usd']}\n"
-        if exec_data['split_trade']:
-            msg += f"Lot Size: {exec_data['calculated_volume']} (Split: {exec_data['vol1']} / {exec_data['vol2']})\n"
-        else:
-            msg += f"Lot Size: {exec_data['calculated_volume']} (Single)\n"
+    if auto_results:
+        msg += "🤖 AUTO EXECUTIONS:\n"
+        for res in auto_results:
+            if res['status'] == 'executed':
+                t_str = f"Ticket {res['ticket1']}"
+                if res.get('ticket2'):
+                    t_str += f" / {res['ticket2']}"
+                msg += f"✅ {res['name']}: Auto-Executed ({t_str})\n"
+            elif res['status'] == 'ignored':
+                msg += f"⚠️ {res['name']}: Ignored ({res['reason']})\n"
+            else:
+                msg += f"❌ {res['name']}: FAILED ({res['reason']})\n"
         msg += "\n"
         
-    msg += f"Do you want to execute this now?"
+    if manual_executions:
+        msg += "✍️ PENDING MANUAL CONFIRMATION:\n"
+        for exec_data in manual_executions:
+            msg += f"Broker: {exec_data['name']}\n"
+            msg += f"Risk: ${exec_data['risk_usd']}\n"
+            if exec_data['split_trade']:
+                msg += f"Lot Size: {exec_data['calculated_volume']} (Split: {exec_data['vol1']} / {exec_data['vol2']})\n"
+            else:
+                msg += f"Lot Size: {exec_data['calculated_volume']} (Single)\n"
+            msg += "\n"
+        msg += f"Do you want to execute these now?"
+        
     send_telegram_message(msg)
     
     # Enhance data for the UI
-    data['instance_executions'] = instance_executions
+    ui_data = {
+        'action': action,
+        'symbol': symbol,
+        'entry': entry,
+        'sl': sl,
+        'tp1': tp1,
+        'tp2': tp2,
+        'auto_results': auto_results,
+        'manual_executions': manual_executions
+    }
     
     # Send to UI via SSE
-    notify_clients("trade_signal", json.dumps(data))
+    notify_clients("trade_signal", json.dumps(ui_data))
 
 @flask_app.route('/api/execute_trade', methods=['POST'])
 def api_execute_trade():

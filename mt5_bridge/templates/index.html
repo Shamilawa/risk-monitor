@@ -102,9 +102,12 @@
                     <!-- Split message injected here -->
                 </div>
             </div>
-            <div class="modal-footer">
+            <div class="modal-footer" id="modal-footer-manual">
                 <button id="btn-abort" class="btn btn-action abort">Abort</button>
                 <button id="btn-execute" class="btn btn-action execute">Execute</button>
+            </div>
+            <div class="modal-footer" id="modal-footer-auto" style="display: none;">
+                <button id="btn-dismiss" class="btn btn-action execute" style="background: var(--color-active); border-color: #0d47a1;">Dismiss</button>
             </div>
         </div>
     </div>
@@ -131,6 +134,24 @@
                         </div>
                         <input type="number" id="new-instance-risk" placeholder="Risk Amount ($)" value="100" style="padding: 6px; background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary);">
                         <input type="text" id="new-instance-mapping" placeholder="Symbol Mapping (e.g. XAUUSD:GOLD,EURUSD:EURUSD.m)" style="padding: 6px; background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary);">
+                        <div style="display: flex; align-items: center; gap: 6px; margin: 4px 0;">
+                            <input type="checkbox" id="new-instance-auto" style="width: auto; cursor: pointer; margin: 0;">
+                            <label for="new-instance-auto" style="cursor: pointer; font-size: 11px; user-select: none; color: var(--text-main);">Enable Auto Trade Mode</label>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 6px; margin: 4px 0;">
+                            <label for="new-instance-timeframe" style="font-size: 11px; color: var(--text-muted); cursor: pointer;">Accepted Timeframe:</label>
+                            <select id="new-instance-timeframe" style="background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-main); font-size: 11px; padding: 2px; cursor: pointer;">
+                                <option value="all">All Timeframes</option>
+                                <option value="1">1 min</option>
+                                <option value="3">3 mins</option>
+                                <option value="5">5 mins</option>
+                                <option value="15">15 mins</option>
+                                <option value="30">30 mins</option>
+                                <option value="60">1 hour</option>
+                                <option value="240">4 hours</option>
+                                <option value="D">Daily</option>
+                            </select>
+                        </div>
                         <button id="btn-add-instance" class="btn btn-action execute" style="margin-top: 5px;">Add Instance</button>
                     </div>
                 </div>

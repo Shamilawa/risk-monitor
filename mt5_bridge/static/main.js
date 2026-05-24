@@ -90,6 +90,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalSplitInfo = document.getElementById('modal-split-info');
     const btnExecute = document.getElementById('btn-execute');
     const btnAbort = document.getElementById('btn-abort');
+    const btnDismiss = document.getElementById('btn-dismiss');
 
     // State map to remember which nodes are expanded
     const expandedState = {};
@@ -796,9 +797,43 @@ document.addEventListener('DOMContentLoaded', () => {
         if (data.tp2) addRow("Take Profit 2", data.tp2);
 
         modalSplitInfo.innerHTML = '';
-        if (data.instance_executions && data.instance_executions.length > 0) {
-            let html = '<div style="margin-top: 10px; font-weight: bold; color: var(--text-primary); border-bottom: 1px solid var(--border-color); padding-bottom: 4px; margin-bottom: 8px;">Executions per Instance:</div>';
-            data.instance_executions.forEach(exec => {
+        let html = '';
+
+        // Display Auto-Executed Results
+        if (data.auto_results && data.auto_results.length > 0) {
+            html += '<div style="margin-top: 10px; font-weight: bold; color: var(--text-primary); border-bottom: 1px solid var(--border-color); padding-bottom: 4px; margin-bottom: 8px;">🤖 Auto-Executed Instances:</div>';
+            data.auto_results.forEach(res => {
+                let badgeClass = 'bdg-cancel';
+                let statusText = 'Unknown';
+                let details = '';
+
+                if (res.status === 'executed') {
+                    badgeClass = 'bdg-buy';
+                    statusText = 'Executed';
+                    details = `Ticket: ${res.ticket1}` + (res.ticket2 ? ` / ${res.ticket2}` : '');
+                } else if (res.status === 'ignored') {
+                    badgeClass = 'bdg-pending';
+                    statusText = 'Ignored';
+                    details = res.reason;
+                } else if (res.status === 'failed') {
+                    badgeClass = 'bdg-sell';
+                    statusText = 'Failed';
+                    details = res.reason;
+                }
+
+                html += `<div style="margin-bottom: 6px; padding: 4px 8px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 3px;">`;
+                html += `<strong>${res.name}</strong> &nbsp;<span class="badge-dense ${badgeClass}">${statusText}</span><br>`;
+                if (details) {
+                    html += `<span style="font-size: 10px; color: var(--text-secondary);">${details}</span>`;
+                }
+                html += `</div>`;
+            });
+        }
+
+        // Display Manual Confirmations
+        if (data.manual_executions && data.manual_executions.length > 0) {
+            html += '<div style="margin-top: 10px; font-weight: bold; color: var(--text-primary); border-bottom: 1px solid var(--border-color); padding-bottom: 4px; margin-bottom: 8px;">✍️ Pending Manual Confirmation:</div>';
+            data.manual_executions.forEach(exec => {
                 html += `<div style="margin-bottom: 8px;">`;
                 html += `<strong>${exec.name}</strong> <span style="font-size: 11px; color: var(--text-muted);">($${exec.risk_usd} Risk)</span><br>`;
                 if (exec.split_trade) {
@@ -808,7 +843,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 html += `</div>`;
             });
-            modalSplitInfo.innerHTML = html;
+        }
+
+        modalSplitInfo.innerHTML = html;
+
+        // Show/Hide footer actions based on presence of manual executions
+        const manualFooter = document.getElementById('modal-footer-manual');
+        const autoFooter = document.getElementById('modal-footer-auto');
+
+        if (data.manual_executions && data.manual_executions.length > 0) {
+            if (manualFooter) manualFooter.style.display = 'flex';
+            if (autoFooter) autoFooter.style.display = 'none';
+        } else {
+            if (manualFooter) manualFooter.style.display = 'none';
+            if (autoFooter) autoFooter.style.display = 'flex';
         }
 
         modalOverlay.classList.add('active');
@@ -847,10 +895,20 @@ document.addEventListener('DOMContentLoaded', () => {
         btnExecute.disabled = true;
         btnExecute.innerText = "Executing...";
 
+        const payload = {
+            symbol: currentTradePayload.symbol,
+            action: currentTradePayload.action,
+            sl: currentTradePayload.sl,
+            tp1: currentTradePayload.tp1,
+            tp2: currentTradePayload.tp2,
+            entry: currentTradePayload.entry,
+            instance_executions: currentTradePayload.manual_executions
+        };
+
         fetch('/api/execute_trade', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(currentTradePayload)
+            body: JSON.stringify(payload)
         })
             .then(res => res.json())
             .then(data => {
@@ -879,6 +937,22 @@ document.addEventListener('DOMContentLoaded', () => {
             .catch(err => console.error("Abort error:", err));
     });
 
+    if (btnDismiss) {
+        btnDismiss.addEventListener('click', () => {
+            currentTradePayload = null;
+            signalQueue.shift();
+            showNextSignal();
+        });
+    }
+
+    function getFriendlyTimeframe(tf) {
+        if (!tf || tf === 'all') return 'All';
+        if (tf === '60') return '1h';
+        if (tf === '240') return '4h';
+        if (tf === 'D') return 'Daily';
+        return `${tf}m`;
+    }
+
     // --- Settings Modal Logic ---
     const btnSettings = document.getElementById('btn-settings');
     const settingsModal = document.getElementById('settings-modal');
@@ -890,6 +964,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnBrowsePath = document.getElementById('btn-browse-path');
     const newInstanceRisk = document.getElementById('new-instance-risk');
     const newInstanceMapping = document.getElementById('new-instance-mapping');
+    const newInstanceTimeframe = document.getElementById('new-instance-timeframe');
 
     if (btnSettings) {
         btnSettings.addEventListener('click', () => {
@@ -907,6 +982,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (newInstancePath) newInstancePath.value = '';
             if (newInstanceRisk) newInstanceRisk.value = '100';
             if (newInstanceMapping) newInstanceMapping.value = '';
+            
+            const newInstanceAuto = document.getElementById('new-instance-auto');
+            if (newInstanceAuto) newInstanceAuto.checked = false;
+            if (newInstanceTimeframe) newInstanceTimeframe.value = 'all';
             
             // Reset button and heading in case it was in edit mode
             if (btnAddInstance) {
@@ -944,11 +1023,16 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
                 data.forEach(inst => {
+                    const tfLabel = getFriendlyTimeframe(inst.accepted_timeframe);
+                    const autoModeBadge = inst.auto_trade 
+                        ? `<span class="badge-dense bdg-buy" style="margin-left: 5px; font-size: 9px; vertical-align: middle;">Auto (${tfLabel})</span>` 
+                        : `<span class="badge-dense bdg-pending" style="margin-left: 5px; font-size: 9px; vertical-align: middle;">Manual Mode</span>`;
+
                     const div = document.createElement('div');
                     div.style = 'display: flex; justify-content: space-between; align-items: center; padding: 8px; background: var(--bg-secondary); border: 1px solid var(--border-color); margin-bottom: 5px;';
                     div.innerHTML = `
                         <div>
-                            <strong>${inst.name}</strong> <span style="font-size: 11px; color: #10b981; margin-left: 5px;">$${inst.risk_usd || 100} Risk</span> ${inst.symbol_suffix ? `<span style="font-size: 11px; color: #64b5f6; margin-left: 5px;">(${inst.symbol_suffix} Suffix)</span>` : ''}<br>
+                            <strong>${inst.name}</strong> ${autoModeBadge} <span style="font-size: 11px; color: #10b981; margin-left: 5px;">$${inst.risk_usd || 100} Risk</span> ${inst.symbol_suffix ? `<span style="font-size: 11px; color: #64b5f6; margin-left: 5px;">(${inst.symbol_suffix} Suffix)</span>` : ''}<br>
                             <span style="font-size: 10px; color: var(--text-muted);">${inst.path}</span>
                         </div>
                         <div style="display: flex; gap: 5px;">
@@ -981,6 +1065,10 @@ document.addEventListener('DOMContentLoaded', () => {
                             newInstancePath.value = inst.path;
                             newInstanceRisk.value = inst.risk_usd || 100;
                             
+                            const newInstanceAuto = document.getElementById('new-instance-auto');
+                            if (newInstanceAuto) newInstanceAuto.checked = inst.auto_trade === 1;
+                            if (newInstanceTimeframe) newInstanceTimeframe.value = inst.accepted_timeframe || 'all';
+                            
                             let mappingStr = '';
                             if (inst.symbol_mapping) {
                                 try {
@@ -1005,6 +1093,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const name = newInstanceName.value;
             const path = newInstancePath.value;
             const risk_usd = parseFloat(newInstanceRisk.value || 100);
+            const autoTradeVal = document.getElementById('new-instance-auto')?.checked ? 1 : 0;
+            const acceptedTimeframeVal = newInstanceTimeframe ? newInstanceTimeframe.value : 'all';
             
             const mappingStr = newInstanceMapping ? newInstanceMapping.value : '';
             const mapping = {};
@@ -1022,7 +1112,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             const editId = btnAddInstance.getAttribute('data-edit-id');
             const method = editId ? 'PUT' : 'POST';
-            const payload = { name, path, risk_usd, symbol_mapping };
+            const payload = { name, path, risk_usd, symbol_mapping, auto_trade: autoTradeVal, accepted_timeframe: acceptedTimeframeVal };
             if (editId) payload.id = editId;
 
             fetch('/api/instances', {
@@ -1034,6 +1124,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 newInstancePath.value = '';
                 if (newInstanceRisk) newInstanceRisk.value = '100';
                 if (newInstanceMapping) newInstanceMapping.value = '';
+                const newInstanceAuto = document.getElementById('new-instance-auto');
+                if (newInstanceAuto) newInstanceAuto.checked = false;
+                if (newInstanceTimeframe) newInstanceTimeframe.value = 'all';
                 
                 btnAddInstance.innerText = "Add Instance";
                 btnAddInstance.removeAttribute('data-edit-id');
