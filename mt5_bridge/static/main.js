@@ -507,12 +507,20 @@ document.addEventListener('DOMContentLoaded', () => {
             const filterGroup = document.getElementById('tracker-filters');
             const mainTableContainer = document.querySelector('.grid-section > .table-container');
             const logContainer = document.getElementById('trading-log-container');
+            const storyContainer = document.getElementById('story-notes-container');
 
             if (currentTab === 'log') {
                 if (filterGroup) filterGroup.style.display = 'none';
                 if (mainTableContainer) mainTableContainer.style.display = 'none';
+                if (storyContainer) storyContainer.style.display = 'none';
                 if (logContainer) logContainer.style.display = 'flex';
                 fetchPerformance();
+            } else if (currentTab === 'story') {
+                if (filterGroup) filterGroup.style.display = 'none';
+                if (mainTableContainer) mainTableContainer.style.display = 'none';
+                if (logContainer) logContainer.style.display = 'none';
+                if (storyContainer) storyContainer.style.display = 'flex';
+                fetchStoryDates();
             } else {
                 if (filterGroup) {
                     if (currentTab === 'history') {
@@ -523,6 +531,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 if (mainTableContainer) mainTableContainer.style.display = 'block';
                 if (logContainer) logContainer.style.display = 'none';
+                if (storyContainer) storyContainer.style.display = 'none';
                 fetchTracker();
             }
         });
@@ -1006,6 +1015,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 instanceList.innerHTML = '';
 
                 const logFilter = document.getElementById('log-instance-filter');
+                const storyFilter = document.getElementById('story-instance-filter');
                 if (logFilter) {
                     const currentVal = logFilter.value;
                     logFilter.innerHTML = '<option value="all">All Instances</option>';
@@ -1016,6 +1026,18 @@ document.addEventListener('DOMContentLoaded', () => {
                         logFilter.appendChild(opt);
                     });
                     logFilter.value = currentVal || 'all';
+                }
+                
+                if (storyFilter) {
+                    const currentVal = storyFilter.value;
+                    storyFilter.innerHTML = '<option value="all">All Instances</option>';
+                    data.forEach(inst => {
+                        const opt = document.createElement('option');
+                        opt.value = inst.id;
+                        opt.innerText = inst.name;
+                        storyFilter.appendChild(opt);
+                    });
+                    storyFilter.value = currentVal || 'all';
                 }
 
                 if (data.length === 0) {
@@ -1149,5 +1171,150 @@ document.addEventListener('DOMContentLoaded', () => {
                 })
                 .catch(err => console.error("Browse file error:", err));
         });
+    }
+
+    // --- Story Notes Logic ---
+    const storyDateFilter = document.getElementById('story-date-filter');
+    const storyInstanceFilter = document.getElementById('story-instance-filter');
+    const btnSyncStories = document.getElementById('btn-sync-stories');
+
+    if (btnSyncStories) {
+        btnSyncStories.addEventListener('click', () => {
+            if (storyDateFilter && storyDateFilter.value) {
+                fetchStoryNotes(storyDateFilter.value);
+            }
+        });
+    }
+
+    if (storyDateFilter) {
+        storyDateFilter.addEventListener('change', (e) => {
+            if (e.target.value) {
+                fetchStoryNotes(e.target.value);
+            }
+        });
+    }
+    
+    if (storyInstanceFilter) {
+        storyInstanceFilter.addEventListener('change', () => {
+            if (storyDateFilter && storyDateFilter.value) {
+                fetchStoryNotes(storyDateFilter.value);
+            }
+        });
+    }
+
+    function fetchStoryDates() {
+        if (!storyDateFilter) return;
+        
+        fetch('/api/story_dates')
+            .then(res => res.json())
+            .then(data => {
+                const dates = data.dates || [];
+                const currentVal = storyDateFilter.value;
+                storyDateFilter.innerHTML = '';
+                
+                if (dates.length === 0) {
+                    storyDateFilter.innerHTML = '<option value="">No dates available</option>';
+                    return;
+                }
+                
+                dates.forEach(d => {
+                    const opt = document.createElement('option');
+                    opt.value = d;
+                    // Format date nicely (e.g. "Jan 25 2024")
+                    const dateObj = new Date(d);
+                    const formatted = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', weekday: 'long' });
+                    opt.innerText = formatted;
+                    storyDateFilter.appendChild(opt);
+                });
+                
+                if (currentVal && dates.includes(currentVal)) {
+                    storyDateFilter.value = currentVal;
+                }
+                
+                if (storyDateFilter.value) {
+                    fetchStoryNotes(storyDateFilter.value);
+                }
+            })
+            .catch(err => console.error("Error fetching story dates:", err));
+    }
+
+    function fetchStoryNotes(dateStr) {
+        if (!dateStr) return;
+        
+        const instanceId = storyInstanceFilter ? storyInstanceFilter.value : 'all';
+        
+        fetch(`/api/story_notes?date=${dateStr}&instance_id=${instanceId}`)
+            .then(res => res.json())
+            .then(data => {
+                // Update metrics
+                if (data.summary) {
+                    const tp = document.getElementById('story-total-profit');
+                    const tt = document.getElementById('story-total-trades');
+                    const wt = document.getElementById('story-win-trades');
+                    const lt = document.getElementById('story-loss-trades');
+                    
+                    if (tp) {
+                        tp.innerText = `$${data.summary.total_profit.toFixed(2)}`;
+                        tp.style.color = data.summary.total_profit > 0 ? 'var(--color-buy)' : (data.summary.total_profit < 0 ? 'var(--color-sell)' : 'var(--text-main)');
+                    }
+                    if (tt) tt.innerText = data.summary.total_trades;
+                    if (wt) wt.innerText = data.summary.win_trades;
+                    if (lt) lt.innerText = data.summary.loss_trades;
+                }
+                
+                // Render timeline
+                const feed = document.getElementById('story-feed');
+                if (!feed) return;
+                feed.innerHTML = '';
+                
+                const stories = data.stories || [];
+                if (stories.length === 0) {
+                    feed.innerHTML = '<div style="color: var(--text-muted); font-size: 12px;">No trades recorded for this date.</div>';
+                    return;
+                }
+                
+                stories.forEach(s => {
+                    // Derive dynamic progression based on status
+                    let progressionHTML = '';
+                    
+                    // 1. Placement
+                    progressionHTML += `<li>${s.mode === 'Auto' ? '🤖 Auto mode' : '✍️ Manual mode'} placed a pending trade at <strong>${s.symbol}</strong> on <strong>${s.timeframe}</strong></li>`;
+                    
+                    // 2. Status Updates
+                    if (s.status === 'SUCCESS_TP1_HIT') {
+                        progressionHTML += `<li>✅ Original trade hit TP1 successfully!</li>`;
+                    } else if (s.status === 'ACTIVE' || s.status === 'RECOVERY_TRIGGERED' || s.status === 'RECOVERY_SUCCESS' || s.status === 'RECOVERY_FAILED') {
+                        progressionHTML += `<li>🔄 Original trade filled and placed the recovery trade</li>`;
+                    } else if (s.status === 'CANCELLED') {
+                        progressionHTML += `<li>❌ Trade cancelled or invalidated</li>`;
+                    }
+                    
+                    if (s.status === 'RECOVERY_SUCCESS') {
+                        progressionHTML += `<li>✅ Recovery Trade Hit TP!</li>`;
+                    } else if (s.status === 'RECOVERY_FAILED') {
+                        progressionHTML += `<li>🛑 Recovery Trade Hit SL!</li>`;
+                    } else if (s.status === 'RECOVERY_TRIGGERED') {
+                        progressionHTML += `<li>⏳ Recovery Trade is currently active</li>`;
+                    }
+                    
+                    // 3. P&L Footer
+                    const plColor = s.pl > 0 ? 'var(--color-buy)' : (s.pl < 0 ? 'var(--color-sell)' : 'var(--text-muted)');
+                    const plSign = s.pl > 0 ? '+' : '';
+                    progressionHTML += `<li style="margin-top: 6px;">💰 <strong>[P&L: <span style="color: ${plColor};">${plSign}$${s.pl.toFixed(2)}</span>]</strong></li>`;
+                    
+                    const cardHTML = `
+                        <div style="background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 6px; padding: 12px;">
+                            <div style="font-size: 13px; color: var(--text-main); font-weight: bold; margin-bottom: 8px;">
+                                ⏱️ [Trade Group #${s.id}] - Executed at ${s.time} <span style="font-size: 10px; color: var(--text-muted); font-weight: normal;">(Your Local Time)</span>
+                            </div>
+                            <ul style="margin: 0; padding-left: 20px; color: var(--text-secondary); font-size: 12px; line-height: 1.6;">
+                                ${progressionHTML}
+                            </ul>
+                        </div>
+                    `;
+                    feed.innerHTML += cardHTML;
+                });
+            })
+            .catch(err => console.error("Error fetching story notes:", err));
     }
 });

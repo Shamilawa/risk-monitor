@@ -1,0 +1,45 @@
+<div id="story-notes-container" class="tab-content" style="display: none; flex-direction: column; flex-grow: 1; min-height: 0;">
+    <!-- Toolbar for Story Notes -->
+    <div class="section-toolbar" style="display: flex; justify-content: space-between; align-items: center; padding: 4px;">
+        <div class="filter-group" style="display: flex; gap: 4px; align-items: center;">
+            <label for="story-date-filter" style="font-size: 10px; color: var(--text-muted);">Date:</label>
+            <select id="story-date-filter" style="background: var(--bg-panel); border: 1px solid var(--border-color); color: var(--text-main); font-size: 11px; padding: 2px;">
+                <option value="">Loading dates...</option>
+            </select>
+            <label for="story-instance-filter" style="font-size: 10px; color: var(--text-muted); margin-left: 8px;">Instance:</label>
+            <select id="story-instance-filter" style="background: var(--bg-panel); border: 1px solid var(--border-color); color: var(--text-main); font-size: 11px; padding: 2px;">
+                <option value="all">All Instances</option>
+            </select>
+        </div>
+        <button id="btn-sync-stories" class="btn-toolbar" style="background: var(--color-active); color: white; border-color: var(--color-active);">Refresh</button>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="summary-cards" style="margin-bottom: 12px;">
+        <div class="metric-card" style="border-left-color: var(--color-active);">
+            <div class="metric-label">Total Profit</div>
+            <div id="story-total-profit" class="metric-value">$0.00</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Total Trade</div>
+            <div id="story-total-trades" class="metric-value">0</div>
+        </div>
+        <div class="metric-card" style="border-left-color: var(--color-buy);">
+            <div class="metric-label">Win Trade</div>
+            <div id="story-win-trades" class="metric-value">0</div>
+        </div>
+        <div class="metric-card" style="border-left-color: var(--color-sell);">
+            <div class="metric-label">Loss Trade</div>
+            <div id="story-loss-trades" class="metric-value">0</div>
+        </div>
+    </div>
+
+    <!-- Timeline Feed -->
+    <div class="timeline-container" style="flex-grow: 1; overflow: auto; padding: 8px;">
+        <h3 style="margin-top: 0; color: var(--text-main); font-size: 14px;">Trade Log Story</h3>
+        <div id="story-feed" style="display: flex; flex-direction: column; gap: 12px;">
+            <!-- Stories populated by JS -->
+            <div style="color: var(--text-muted); font-size: 12px;">No trades recorded for this date.</div>
+        </div>
+    </div>
+</div>

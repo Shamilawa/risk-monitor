@@ -13,6 +13,7 @@ import sqlite3
 import random
 import time
 import webbrowser
+from datetime import datetime
 
 load_dotenv()
 
@@ -300,6 +301,17 @@ def init_db():
     except Exception: pass
     try:
         c.execute("ALTER TABLE trading_log ADD COLUMN raw_profit REAL DEFAULT 0")
+    except Exception: pass
+    
+    # Add columns for Story Notes if they don't exist
+    try:
+        c.execute("ALTER TABLE trade_groups ADD COLUMN created_at TIMESTAMP")
+    except Exception: pass
+    try:
+        c.execute("ALTER TABLE trade_groups ADD COLUMN signal_timeframe TEXT")
+    except Exception: pass
+    try:
+        c.execute("ALTER TABLE trade_groups ADD COLUMN execution_mode TEXT")
     except Exception: pass
     
     conn.commit()
@@ -706,9 +718,9 @@ def is_trade_allowed(instance_id, symbol, action):
     Opposite direction trades are always allowed even if not hit TP1.
     
     NOTE: As soon as a trade hits TP1, the bridge updates its status to 'SUCCESS_TP1_HIT'.
-    Therefore, by querying only 'PENDING_ORIGINAL', 'ACTIVE', and 'RECOVERY_TRIGGERED', 
-    we ensure that once TP1 is hit, the existing trade group is no longer considered blocking, 
-    and a new same-side signal is allowed to execute.
+    Therefore, by querying only 'PENDING_ORIGINAL' and 'ACTIVE', 
+    we ensure that once TP1 is hit (or if a recovery trade is running), the existing trade 
+    group is no longer considered blocking, and a new same-side signal is allowed to execute.
     """
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
@@ -716,13 +728,13 @@ def is_trade_allowed(instance_id, symbol, action):
         c.execute("""
             SELECT COUNT(*) FROM trade_groups 
             WHERE instance_id IS NULL AND symbol = ? AND action = ? 
-              AND status IN ('PENDING_ORIGINAL', 'ACTIVE', 'RECOVERY_TRIGGERED')
+              AND status IN ('PENDING_ORIGINAL', 'ACTIVE')
         """, (symbol, action.upper()))
     else:
         c.execute("""
             SELECT COUNT(*) FROM trade_groups 
             WHERE instance_id = ? AND symbol = ? AND action = ? 
-              AND status IN ('PENDING_ORIGINAL', 'ACTIVE', 'RECOVERY_TRIGGERED')
+              AND status IN ('PENDING_ORIGINAL', 'ACTIVE')
         """, (instance_id, symbol, action.upper()))
     count = c.fetchone()[0]
     conn.close()
@@ -860,14 +872,15 @@ def process_signal(data):
             
             conn_db = sqlite3.connect('trades.db')
             c_db = conn_db.cursor()
+            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             c_db.execute('''
                 INSERT INTO trade_groups (
                     instance_id, magic_number, symbol, action, entry_price, sl, tp1, tp2, vol1, vol2, split_trade,
-                    trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status, created_at, signal_timeframe, execution_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 inst_id, magic_number, symbol, action, entry, sl, tp1, tp2, vol1, vol2, 1 if split_trade else 0,
-                t1_ticket, t2_ticket, None, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status
+                t1_ticket, t2_ticket, None, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status, now_str, signal_timeframe, 'Auto'
             ))
             conn_db.commit()
             conn_db.close()
@@ -945,6 +958,7 @@ def process_signal(data):
         'sl': sl,
         'tp1': tp1,
         'tp2': tp2,
+        'timeframe': signal_timeframe,
         'auto_results': auto_results,
         'manual_executions': manual_executions
     }
@@ -961,6 +975,7 @@ def api_execute_trade():
     tp1 = float(data.get('tp1', 0))
     tp2 = float(data.get('tp2', 0))
     entry = float(data.get('entry', 0))
+    timeframe = data.get('timeframe', 'Unknown')
     
     instance_executions = data.get('instance_executions', [])
     
@@ -997,14 +1012,15 @@ def api_execute_trade():
             
         status = 'PENDING_ORIGINAL' if t1_ticket else 'FAILED_EXECUTION'
         
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         c.execute('''
             INSERT INTO trade_groups (
                 instance_id, magic_number, symbol, action, entry_price, sl, tp1, tp2, vol1, vol2, split_trade,
-                trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                trade_1_ticket, trade_2_ticket, recovery_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status, created_at, signal_timeframe, execution_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             inst_id, magic_number, symbol, action, entry, sl, tp1, tp2, vol1, vol2, split_int,
-            t1_ticket, t2_ticket, None, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status
+            t1_ticket, t2_ticket, None, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, status, now_str, timeframe, 'Manual'
         ))
         
         if status == 'FAILED_EXECUTION':
@@ -1276,6 +1292,90 @@ def api_performance():
         },
         "trades": trades
     })
+
+@flask_app.route('/api/story_dates', methods=['GET'])
+def api_story_dates():
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    c.execute("SELECT DISTINCT date(created_at) FROM trade_groups WHERE created_at IS NOT NULL ORDER BY date(created_at) DESC")
+    rows = c.fetchall()
+    conn.close()
+    
+    dates = [r[0] for r in rows if r[0]]
+    return jsonify({"dates": dates})
+
+@flask_app.route('/api/story_notes', methods=['GET'])
+def api_story_notes():
+    date_str = request.args.get('date')
+    instance_id = request.args.get('instance_id', 'all')
+    if not date_str:
+        return jsonify({"error": "date parameter is required"}), 400
+        
+    conn = sqlite3.connect('trades.db')
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    if instance_id != 'all':
+        c.execute("""
+            SELECT * FROM trade_groups 
+            WHERE date(created_at) = ? AND instance_id = ?
+            ORDER BY created_at ASC
+        """, (date_str, instance_id))
+    else:
+        c.execute("""
+            SELECT * FROM trade_groups 
+            WHERE date(created_at) = ? 
+            ORDER BY created_at ASC
+        """, (date_str,))
+    trade_groups = c.fetchall()
+    
+    # Pre-calculate Magic Number Profits
+    c.execute("""
+        SELECT magic, SUM(profit) as net_profit, COUNT(*) as trades
+        FROM trading_log 
+        GROUP BY magic
+    """)
+    magic_profits = {row['magic']: row['net_profit'] for row in c.fetchall()}
+    
+    conn.close()
+    
+    total_profit = 0
+    total_trades = len(trade_groups)
+    win_trades = 0
+    loss_trades = 0
+    
+    stories = []
+    
+    for idx, tg in enumerate(trade_groups):
+        magic = tg['magic_number']
+        pl = magic_profits.get(magic, 0)
+        
+        if pl > 0:
+            win_trades += 1
+        elif pl < 0:
+            loss_trades += 1
+            
+        total_profit += pl
+        
+        story = {
+            'id': idx + 1,
+            'time': tg['created_at'].split(' ')[1] if tg['created_at'] else "Unknown",
+            'mode': tg['execution_mode'] or "Unknown",
+            'symbol': tg['symbol'],
+            'timeframe': tg['signal_timeframe'] or "Unknown",
+            'status': tg['status'],
+            'pl': round(pl, 2)
+        }
+        stories.append(story)
+        
+    summary = {
+        'total_profit': round(total_profit, 2),
+        'total_trades': total_trades,
+        'win_trades': win_trades,
+        'loss_trades': loss_trades
+    }
+    
+    return jsonify({"summary": summary, "stories": stories})
 
 @flask_app.route('/signal_alert.wav')
 def signal_alert():
