@@ -304,6 +304,14 @@ def init_db():
     try:
         c.execute("ALTER TABLE trading_log ADD COLUMN raw_profit REAL DEFAULT 0")
     except Exception: pass
+
+    try:
+        c.execute("ALTER TABLE trading_log ADD COLUMN local_start_time INTEGER")
+    except Exception: pass
+
+    try:
+        c.execute("ALTER TABLE trading_log ADD COLUMN local_time INTEGER")
+    except Exception: pass
     
     # Add columns for Story Notes if they don't exist
     try:
@@ -1314,6 +1322,19 @@ def api_sync_log():
             
         logging.info(f"Fetched {len(deals)} deals from {inst_name}")
         
+        # Calculate MT5 to Local Time Offset
+        time_offset = 0
+        if len(deals) > 0:
+            import time
+            for d in reversed(deals):
+                if d.symbol:
+                    mt5.symbol_select(d.symbol, True)
+                    tick = mt5.symbol_info_tick(d.symbol)
+                    if tick and tick.time > 0:
+                        time_offset = int(time.time()) - tick.time
+                        logging.info(f"Calculated time offset for {inst_name}: {time_offset} seconds (using {d.symbol})")
+                        break
+        
         # Clear existing logs for this instance to ensure a clean sync
         c.execute("DELETE FROM trading_log WHERE instance_id = ?", (inst_id,))
         
@@ -1337,20 +1358,24 @@ def api_sync_log():
                 total_swap = sum(d.swap for d in pos_deals)
                 net_profit = total_profit + total_comm + total_swap
                 logging.info(f"Position {deal.position_id}: Profit={total_profit}, Comm={total_comm}, Swap={total_swap}, Net={net_profit}")
+                local_start_time = pos_deals[0].time + time_offset
             else:
                 total_profit = deal.profit
                 total_comm = deal.commission
                 total_swap = deal.swap
                 net_profit = deal.profit + deal.commission + deal.swap
                 logging.info(f"Deal {deal.ticket} (no pos deals): Profit={deal.profit}, Comm={deal.commission}, Swap={deal.swap}, Net={net_profit}")
+                local_start_time = deal.time + time_offset
+            
+            local_close_time = deal.time + time_offset
             
             try:
                 c.execute('''
                     INSERT INTO trading_log (
-                        instance_id, ticket, symbol, type, volume, profit, time, magic, comment, commission, swap, raw_profit
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        instance_id, ticket, symbol, type, volume, profit, time, magic, comment, commission, swap, raw_profit, local_start_time, local_time
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
-                    inst_id, deal.ticket, deal.symbol, deal.type, deal.volume, net_profit, deal.time, deal.magic, deal.comment, total_comm, total_swap, total_profit
+                    inst_id, deal.ticket, deal.symbol, deal.type, deal.volume, net_profit, deal.time, deal.magic, deal.comment, total_comm, total_swap, total_profit, local_start_time, local_close_time
                 ))
                 total_synced += 1
             except Exception as e:
@@ -1364,18 +1389,32 @@ def api_sync_log():
 @flask_app.route('/api/performance', methods=['GET'])
 def api_performance():
     inst_id = request.args.get('instance_id')
+    start_time = request.args.get('start_time')
+    end_time = request.args.get('end_time')
     
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
     
-    query = "SELECT l.id, l.instance_id, i.name, l.ticket, l.symbol, l.type, l.volume, l.profit, l.time, l.magic, l.comment, l.commission, l.swap, l.raw_profit FROM trading_log l LEFT JOIN instances i ON l.instance_id = i.id"
+    query = "SELECT l.id, l.instance_id, i.name, l.ticket, l.symbol, l.type, l.volume, l.profit, l.time, l.magic, l.comment, l.commission, l.swap, l.raw_profit, l.local_start_time, l.local_time FROM trading_log l LEFT JOIN instances i ON l.instance_id = i.id"
+    conditions = []
     params = []
     
     if inst_id and inst_id != 'all':
-        query += " WHERE l.instance_id = ?"
+        conditions.append("l.instance_id = ?")
         params.append(inst_id)
         
-    query += " ORDER BY l.time DESC"
+    if start_time:
+        conditions.append("COALESCE(l.local_time, l.time) >= ?")
+        params.append(int(start_time))
+        
+    if end_time:
+        conditions.append("COALESCE(l.local_time, l.time) <= ?")
+        params.append(int(end_time))
+        
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+        
+    query += " ORDER BY COALESCE(l.local_time, l.time) DESC"
     
     c.execute(query, params)
     rows = c.fetchall()
@@ -1403,7 +1442,9 @@ def api_performance():
             "comment": r[10],
             "commission": r[11],
             "swap": r[12],
-            "raw_profit": r[13]
+            "raw_profit": r[13],
+            "local_start_time": r[14],
+            "local_time": r[15]
         })
         
         # Only count deals with non-zero profit for metrics to avoid counting double

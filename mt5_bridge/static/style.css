@@ -896,3 +896,201 @@ input:checked + .slider:before {
     font-size: 8px;
     color: var(--text-muted);
 }
+
+/* --- A4 Report Document Styling --- */
+.a4-sheet {
+    width: 100%;
+    max-width: 800px;
+    min-height: 1050px;
+    margin: 0 auto;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+    padding: 50px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    border-radius: 4px;
+    position: relative;
+    font-family: inherit;
+}
+
+/* Meta Grid */
+.report-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-row-alt);
+    margin-top: 12px;
+}
+
+.meta-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 14px;
+    border-right: 1px solid var(--border-color);
+}
+.meta-item:last-child {
+    border-right: none;
+}
+
+.meta-label {
+    font-size: 8px;
+    font-weight: bold;
+    color: var(--text-muted);
+    letter-spacing: 0.5px;
+}
+
+.meta-value {
+    font-size: 11px;
+    font-weight: bold;
+    color: var(--text-main);
+}
+
+.report-section-title {
+    font-size: 11px;
+    font-weight: bold;
+    color: var(--text-main);
+    letter-spacing: 0.5px;
+    border-bottom: 1.5px solid var(--text-main);
+    padding-bottom: 4px;
+    margin: 0;
+    text-transform: uppercase;
+}
+
+/* Report Table */
+.report-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+}
+
+.report-table th {
+    background: var(--bg-toolbar);
+    border-bottom: 2px solid var(--border-color);
+    padding: 6px 10px;
+    font-weight: bold;
+    color: var(--text-main);
+    text-transform: uppercase;
+    font-size: 9px;
+    letter-spacing: 0.5px;
+}
+
+.report-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-main);
+}
+
+.report-table tr:hover {
+    background: var(--bg-row-hover);
+}
+
+/* Document Timeline */
+.report-timeline {
+    position: relative;
+    padding-left: 20px;
+    border-left: 1.5px solid var(--border-color);
+    margin: 8px 0 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    list-style: none; /* remove bullet points */
+}
+
+.report-timeline-item {
+    position: relative;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-main);
+}
+
+.report-timeline-item::before {
+    content: '';
+    position: absolute;
+    left: -26px;
+    top: 3px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--bg-panel);
+    border: 2px solid var(--color-active);
+    box-sizing: border-box;
+}
+
+.report-timeline-item.hit::before {
+    border-color: var(--color-buy);
+    background: var(--color-buy);
+}
+
+.report-timeline-item.stopped::before {
+    border-color: var(--color-sell);
+    background: var(--color-sell);
+}
+
+.report-timeline-item.pending::before {
+    border-color: var(--color-pending);
+}
+
+/* Report Footer */
+.report-footer {
+    margin-top: auto;
+    padding-top: 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+}
+
+/* Print Media Styles */
+@media print {
+    body {
+        background: white !important;
+        color: black !important;
+    }
+    
+    .app-container,
+    .toolbar,
+    .workspace,
+    .logs-section,
+    .section-toolbar,
+    .modal-overlay {
+        display: none !important;
+    }
+    
+    #story-notes-container {
+        display: block !important;
+        position: absolute;
+        left: 0; top: 0;
+        width: 100% !important;
+        height: auto !important;
+        padding: 0 !important;
+        background: white !important;
+        overflow: visible !important;
+    }
+    
+    #story-notes-container > div {
+        padding: 0 !important;
+        overflow: visible !important;
+    }
+    
+    .a4-sheet {
+        width: 100% !important;
+        max-width: 100% !important;
+        margin: 0 !important;
+        padding: 15mm !important;
+        border: none !important;
+        box-shadow: none !important;
+        background: white !important;
+        color: black !important;
+        min-height: auto !important;
+    }
+    
+    /* Force browser colors during printing */
+    * {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+    }
+}

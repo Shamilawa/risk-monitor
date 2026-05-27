@@ -197,7 +197,42 @@ document.addEventListener('DOMContentLoaded', () => {
     function fetchPerformance() {
         const logFilter = document.getElementById('log-instance-filter');
         const instId = logFilter ? logFilter.value : 'all';
-        fetch(`/api/performance?instance_id=${instId}`)
+        let url = `/api/performance?instance_id=${instId}`;
+        
+        const timeFilterEl = document.getElementById('log-time-filter');
+        if (timeFilterEl) {
+            const timeFilter = timeFilterEl.value;
+            let startTime = null;
+            let endTime = null;
+            const now = new Date();
+            
+            if (timeFilter === 'today') {
+                const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                startTime = Math.floor(d.getTime() / 1000);
+            } else if (timeFilter === 'week') {
+                const day = now.getDay() || 7;
+                const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day + 1);
+                startTime = Math.floor(d.getTime() / 1000);
+            } else if (timeFilter === 'month') {
+                const d = new Date(now.getFullYear(), now.getMonth(), 1);
+                startTime = Math.floor(d.getTime() / 1000);
+            } else if (timeFilter === 'last_month') {
+                const startD = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                const endD = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+                startTime = Math.floor(startD.getTime() / 1000);
+                endTime = Math.floor(endD.getTime() / 1000);
+            } else if (timeFilter === 'custom') {
+                const startInput = document.getElementById('log-start-date').value;
+                const endInput = document.getElementById('log-end-date').value;
+                if (startInput) startTime = Math.floor(new Date(startInput + 'T00:00:00').getTime() / 1000);
+                if (endInput) endTime = Math.floor(new Date(endInput + 'T23:59:59').getTime() / 1000);
+            }
+            
+            if (startTime !== null) url += `&start_time=${startTime}`;
+            if (endTime !== null) url += `&end_time=${endTime}`;
+        }
+
+        fetch(url)
             .then(res => res.json())
             .then(data => {
                 renderPerformance(data);
@@ -283,12 +318,44 @@ document.addEventListener('DOMContentLoaded', () => {
 
             data.trades.forEach(t => {
                 const tr = document.createElement('tr');
-                const date = new Date(t.time * 1000);
-                const timeStr = date.toLocaleString();
+                let timeDisplay = "";
+                if (t.local_start_time && t.local_time) {
+                    const startDate = new Date(t.local_start_time * 1000);
+                    const endDate = new Date(t.local_time * 1000);
+                    
+                    const formatTime = (d) => {
+                        let hours = d.getHours();
+                        const ampm = hours >= 12 ? 'PM' : 'AM';
+                        hours = hours % 12;
+                        hours = hours ? hours : 12; 
+                        const mins = d.getMinutes().toString().padStart(2, '0');
+                        return `${hours}:${mins} ${ampm}`;
+                    };
+                    
+                    const diffMs = endDate - startDate;
+                    const diffMins = Math.floor(diffMs / 60000);
+                    const diffHrs = Math.floor(diffMins / 60);
+                    const remainingMins = diffMins % 60;
+                    
+                    let durStr = "";
+                    if (diffHrs > 0) durStr += `${diffHrs}h `;
+                    durStr += `${remainingMins}m`;
+                    
+                    const dateStr = endDate.toLocaleDateString();
+                    
+                    timeDisplay = `
+                        <div style="font-size: 11px;">${dateStr}</div>
+                        <div style="font-size: 10px; color: var(--text-muted);">${formatTime(startDate)} to ${formatTime(endDate)} <br>(${durStr})</div>
+                    `;
+                } else {
+                    const fallbackDate = new Date((t.local_time || t.time) * 1000);
+                    timeDisplay = fallbackDate.toLocaleString();
+                }
+
                 const profitClass = t.profit > 0 ? 'bdg-buy' : t.profit < 0 ? 'bdg-sell' : 'bdg-cancel';
 
                 tr.innerHTML = `
-                    <td>${timeStr}</td>
+                    <td>${timeDisplay}</td>
                     <td>${t.instance_name}</td>
                     <td>${t.symbol}</td>
                     <td><span class="badge-dense ${t.type === 'BUY' ? 'bdg-buy' : 'bdg-sell'}">${t.type}</span></td>
@@ -492,10 +559,32 @@ document.addEventListener('DOMContentLoaded', () => {
     // Log Instance Filter
     const logInstanceFilter = document.getElementById('log-instance-filter');
     if (logInstanceFilter) {
-        logInstanceFilter.addEventListener('change', () => {
-            fetchPerformance();
+        logInstanceFilter.addEventListener('change', () => fetchPerformance());
+    }
+
+    // Log Time Filter
+    const logTimeFilter = document.getElementById('log-time-filter');
+    const logCustomDates = document.getElementById('log-custom-dates');
+    const logStartDate = document.getElementById('log-start-date');
+    const logEndDate = document.getElementById('log-end-date');
+    
+    if (logTimeFilter) {
+        logTimeFilter.addEventListener('change', () => {
+            if (logTimeFilter.value === 'custom') {
+                logCustomDates.style.display = 'flex';
+                // Automatically fetch if dates are already filled in
+                if (logStartDate.value || logEndDate.value) {
+                    fetchPerformance();
+                }
+            } else {
+                logCustomDates.style.display = 'none';
+                fetchPerformance();
+            }
         });
     }
+    
+    if (logStartDate) logStartDate.addEventListener('change', () => fetchPerformance());
+    if (logEndDate) logEndDate.addEventListener('change', () => fetchPerformance());
 
     const tabs = document.querySelectorAll('.grid-section .section-toolbar .tab');
 
@@ -1233,12 +1322,43 @@ document.addEventListener('DOMContentLoaded', () => {
         fetch(`/api/story_notes?date=${dateStr}&instance_id=${instanceId}`)
             .then(res => res.json())
             .then(data => {
+                // Update report metadata fields
+                const reportDate = document.getElementById('report-date');
+                if (reportDate) reportDate.innerText = dateStr;
+                
+                const reportInst = document.getElementById('report-instance');
+                if (reportInst) {
+                    const currentInstText = storyInstanceFilter ? storyInstanceFilter.options[storyInstanceFilter.selectedIndex].text : "All Instances";
+                    reportInst.innerText = currentInstText;
+                }
+                
+                const reportTime = document.getElementById('report-time');
+                if (reportTime) {
+                    const now = new Date();
+                    reportTime.innerText = now.toLocaleTimeString();
+                }
+                
+                const reportRef = document.getElementById('report-ref-id');
+                if (reportRef) {
+                    const refInst = storyInstanceFilter ? storyInstanceFilter.value : "ALL";
+                    reportRef.innerText = `VTC-${dateStr.replace(/-/g, '')}-${refInst}`;
+                }
+
+                // Pre-calculate Win Rate
+                let winRateStr = "0.0%";
+                let rateVal = 0;
+                if (data.summary && data.summary.total_trades > 0) {
+                    rateVal = (data.summary.win_trades / data.summary.total_trades) * 100;
+                    winRateStr = `${rateVal.toFixed(1)}%`;
+                }
+                
                 // Update metrics
                 if (data.summary) {
                     const tp = document.getElementById('story-total-profit');
                     const tt = document.getElementById('story-total-trades');
                     const wt = document.getElementById('story-win-trades');
                     const lt = document.getElementById('story-loss-trades');
+                    const wr = document.getElementById('story-win-rate');
                     
                     if (tp) {
                         tp.innerText = `$${data.summary.total_profit.toFixed(2)}`;
@@ -1247,6 +1367,38 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (tt) tt.innerText = data.summary.total_trades;
                     if (wt) wt.innerText = data.summary.win_trades;
                     if (lt) lt.innerText = data.summary.loss_trades;
+                    if (wr) wr.innerText = winRateStr;
+                }
+
+                // Update Performance Grade Rating
+                const ratingGrade = document.getElementById('report-grade');
+                const ratingDesc = document.getElementById('report-grade-desc');
+                if (ratingGrade && ratingDesc) {
+                    const total = data.summary ? data.summary.total_trades : 0;
+                    if (total === 0) {
+                        ratingGrade.innerText = "N/A";
+                        ratingGrade.style.color = "var(--text-muted)";
+                        ratingDesc.innerText = "No trades logged today.";
+                    } else {
+                        const net = data.summary.total_profit;
+                        if (net > 0 && rateVal >= 70) {
+                            ratingGrade.innerText = "A+";
+                            ratingGrade.style.color = "var(--color-buy)";
+                            ratingDesc.innerText = "Excellent trading day with solid profits and high strike rate.";
+                        } else if (net > 0 && rateVal >= 50) {
+                            ratingGrade.innerText = "B";
+                            ratingGrade.style.color = "var(--color-active)";
+                            ratingDesc.innerText = "Profitable trading day with average strike rate.";
+                        } else if (net === 0) {
+                            ratingGrade.innerText = "B/E";
+                            ratingGrade.style.color = "var(--text-muted)";
+                            ratingDesc.innerText = "Perfect break-even trading session.";
+                        } else {
+                            ratingGrade.innerText = "D / draw";
+                            ratingGrade.style.color = "var(--color-sell)";
+                            ratingDesc.innerText = "Trading session in negative drawdown. Monitor risk settings.";
+                        }
+                    }
                 }
                 
                 // Render timeline
@@ -1256,45 +1408,86 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 const stories = data.stories || [];
                 if (stories.length === 0) {
-                    feed.innerHTML = '<div style="color: var(--text-muted); font-size: 12px;">No trades recorded for this date.</div>';
+                    feed.innerHTML = '<div style="color: var(--text-muted); font-size: 11px; padding: 20px 0; text-align: center; font-style: italic;">No signals or executions logged for the selected date.</div>';
                     return;
                 }
                 
                 stories.forEach(s => {
-                    // Derive dynamic progression based on status
+                    // Derive dynamic progression based on new trade management rules (and legacy fallback support)
                     let progressionHTML = '';
                     
                     // 1. Placement
-                    progressionHTML += `<li>${s.mode === 'Auto' ? '🤖 Auto mode' : '✍️ Manual mode'} placed a pending trade at <strong>${s.symbol}</strong> on <strong>${s.timeframe}</strong></li>`;
+                    progressionHTML += `<li class="report-timeline-item pending">${s.mode === 'Auto' ? '🤖 Auto mode' : '✍️ Manual mode'} placed pending orders for Trade 1 & Trade 2 at <strong>${s.symbol}</strong> on <strong>${s.timeframe}</strong></li>`;
                     
                     // 2. Status Updates
-                    if (s.status === 'SUCCESS_TP1_HIT') {
-                        progressionHTML += `<li>✅ Original trade hit TP1 successfully!</li>`;
-                    } else if (s.status === 'ACTIVE' || s.status === 'RECOVERY_TRIGGERED' || s.status === 'RECOVERY_SUCCESS' || s.status === 'RECOVERY_FAILED') {
-                        progressionHTML += `<li>🔄 Original trade filled and placed the recovery trade</li>`;
+                    if (s.status === 'PENDING_ORIGINAL') {
+                        progressionHTML += `<li class="report-timeline-item pending">⏳ Pending orders active. Waiting for entry price to fill.</li>`;
+                    } else if (s.status === 'ACTIVE') {
+                        progressionHTML += `<li class="report-timeline-item hit">🔄 Entry price filled! Both Trade 1 and Trade 2 are currently active.</li>`;
+                        progressionHTML += `<li class="report-timeline-item pending">📈 Tracking price towards Take Profit 1 (0.7R).</li>`;
+                    } else if (s.status === 'ACTIVE_T2_SL_ORIGINAL') {
+                        progressionHTML += `<li class="report-timeline-item hit">🔄 Entry price filled! Both Trade 1 and Trade 2 active.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">✅ Take Profit 1 (0.7R) hit! Trade 1 closed, securing 50% profit.</li>`;
+                        progressionHTML += `<li class="report-timeline-item pending">📈 Trade 2 is running with original Stop Loss. Tracking towards 1.3R.</li>`;
+                    } else if (s.status === 'ACTIVE_T2_SL_MINUS_0_5') {
+                        progressionHTML += `<li class="report-timeline-item hit">🔄 Entry price filled! Both Trade 1 and Trade 2 active.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">✅ Take Profit 1 (0.7R) hit! Trade 1 closed, securing 50% profit.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">🛡️ Price reached 1.3R! Trade 2 Stop Loss trailed to -0.5R.</li>`;
+                        progressionHTML += `<li class="report-timeline-item pending">📈 Tracking towards 2.5R.</li>`;
+                    } else if (s.status === 'ACTIVE_T2_SL_PLUS_0_25') {
+                        progressionHTML += `<li class="report-timeline-item hit">🔄 Entry price filled! Both Trade 1 and Trade 2 active.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">✅ Take Profit 1 (0.7R) hit! Trade 1 closed, securing 50% profit.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">🛡️ Price reached 1.3R! Trade 2 Stop Loss trailed to -0.5R.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">🛡️ Price reached 2.5R! Trade 2 Stop Loss trailed to +0.25R.</li>`;
+                        progressionHTML += `<li class="report-timeline-item pending">📈 Tracking towards Take Profit 2 (3.0R).</li>`;
+                    } else if (s.status === 'SUCCESS_TP2_HIT') {
+                        progressionHTML += `<li class="report-timeline-item hit">🔄 Entry price filled! Both Trade 1 and Trade 2 active.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">✅ Take Profit 1 (0.7R) hit! Trade 1 closed, securing 50% profit.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">Price reached 1.3R! Trade 2 Stop Loss trailed to -0.5R.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">Price reached 2.5R! Trade 2 Stop Loss trailed to +0.25R.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">🎯 Take Profit 2 (3.0R) hit! Trade 2 closed, securing remaining 50% profit.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">🎉 Trade group completed successfully with full profit targets!</li>`;
+                    } else if (s.status === 'CLOSED_T2_SL') {
+                        progressionHTML += `<li class="report-timeline-item hit">🔄 Entry price filled! Both Trade 1 and Trade 2 active.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">✅ Take Profit 1 (0.7R) hit! Trade 1 closed, securing 50% profit.</li>`;
+                        progressionHTML += `<li class="report-timeline-item stopped">🛑 Trade 2 stopped out at trailed Stop Loss.</li>`;
+                    } else if (s.status === 'CLOSED_SL') {
+                        progressionHTML += `<li class="report-timeline-item hit">🔄 Entry price filled! Both Trade 1 and Trade 2 active.</li>`;
+                        progressionHTML += `<li class="report-timeline-item stopped">🛑 Original Stop Loss hit! Both Trade 1 and Trade 2 stopped out.</li>`;
                     } else if (s.status === 'CANCELLED') {
-                        progressionHTML += `<li>❌ Trade cancelled or invalidated</li>`;
-                    }
-                    
-                    if (s.status === 'RECOVERY_SUCCESS') {
-                        progressionHTML += `<li>✅ Recovery Trade Hit TP!</li>`;
-                    } else if (s.status === 'RECOVERY_FAILED') {
-                        progressionHTML += `<li>🛑 Recovery Trade Hit SL!</li>`;
+                        progressionHTML += `<li class="report-timeline-item stopped">❌ Trade pending orders cancelled or invalidated before filling.</li>`;
+                    } 
+                    // Legacy status support
+                    else if (s.status === 'SUCCESS_TP1_HIT') {
+                        progressionHTML += `<li class="report-timeline-item hit">✅ Original trade hit TP1 successfully!</li>`;
                     } else if (s.status === 'RECOVERY_TRIGGERED') {
-                        progressionHTML += `<li>⏳ Recovery Trade is currently active</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">🔄 Original trade filled and placed the recovery trade</li>`;
+                        progressionHTML += `<li class="report-timeline-item pending">⏳ Recovery Trade is currently active</li>`;
+                    } else if (s.status === 'RECOVERY_SUCCESS') {
+                        progressionHTML += `<li class="report-timeline-item hit">🔄 Original trade filled and placed the recovery trade</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">✅ Recovery Trade Hit TP!</li>`;
+                    } else if (s.status === 'RECOVERY_FAILED') {
+                        progressionHTML += `<li class="report-timeline-item hit">🔄 Original trade filled and placed the recovery trade</li>`;
+                        progressionHTML += `<li class="report-timeline-item stopped">🛑 Recovery Trade Hit SL!</li>`;
+                    } else {
+                        progressionHTML += `<li>Status: ${s.status}</li>`;
                     }
                     
                     // 3. P&L Footer
                     const plColor = s.pl > 0 ? 'var(--color-buy)' : (s.pl < 0 ? 'var(--color-sell)' : 'var(--text-muted)');
                     const plSign = s.pl > 0 ? '+' : '';
-                    progressionHTML += `<li style="margin-top: 6px;">💰 <strong>[P&L: <span style="color: ${plColor};">${plSign}$${s.pl.toFixed(2)}</span>]</strong></li>`;
+                    progressionHTML += `<li style="margin-top: 6px; list-style: none;">💰 <strong>[P&L: <span style="color: ${plColor};">${plSign}$${s.pl.toFixed(2)}</span>]</strong></li>`;
                     
                     const cardHTML = `
-                        <div style="background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 6px; padding: 12px;">
-                            <div style="font-size: 13px; color: var(--text-main); font-weight: bold; margin-bottom: 8px;">
-                                ⏱️ [Trade Group #${s.id}] - Executed at ${s.time} <span style="font-size: 10px; color: var(--text-muted); font-weight: normal;">(Your Local Time)</span>
+                        <div style="margin-bottom: 20px; page-break-inside: avoid;">
+                            <div style="font-size: 11px; color: var(--text-main); font-weight: bold; padding-bottom: 4px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between;">
+                                <span>SIGNAL GROUP #${s.id}: ${s.symbol} (${s.timeframe})</span>
+                                <span style="font-family: monospace; color: var(--text-muted);">${s.time} LOCAL</span>
                             </div>
-                            <ul style="margin: 0; padding-left: 20px; color: var(--text-secondary); font-size: 12px; line-height: 1.6;">
+                            <div style="font-size: 10px; color: var(--text-muted); margin-top: 4px; margin-bottom: 6px;">
+                                Mode: ${s.mode === 'Auto' ? 'Automated Execution' : 'Manual Execution'}
+                            </div>
+                            <ul class="report-timeline">
                                 ${progressionHTML}
                             </ul>
                         </div>
@@ -1303,6 +1496,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             })
             .catch(err => console.error("Error fetching story notes:", err));
+    }
+
+    // --- PDF Export Button listener ---
+    const btnPrintStories = document.getElementById('btn-print-stories');
+    if (btnPrintStories) {
+        btnPrintStories.addEventListener('click', () => {
+            window.print();
+        });
     }
 
     // --- Collapsible Event Log Section ---

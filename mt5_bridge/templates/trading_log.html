@@ -7,6 +7,22 @@
                 <option value="all">All Instances</option>
                 <!-- Options populated by JS -->
             </select>
+            
+            <label for="log-time-filter" style="font-size: 10px; color: var(--text-muted); margin-left: 10px;">Date:</label>
+            <select id="log-time-filter" style="background: var(--bg-panel); border: 1px solid var(--border-color); color: var(--text-main); font-size: 11px; padding: 2px;">
+                <option value="all">All Time</option>
+                <option value="today">Today</option>
+                <option value="week">This Week</option>
+                <option value="month">This Month</option>
+                <option value="last_month">Last Month</option>
+                <option value="custom">Custom Range...</option>
+            </select>
+            
+            <div id="log-custom-dates" style="display: none; gap: 4px; align-items: center;">
+                <input type="date" id="log-start-date" style="background: var(--bg-panel); border: 1px solid var(--border-color); color: var(--text-main); font-size: 11px; padding: 1px;">
+                <span style="font-size: 10px; color: var(--text-muted);">to</span>
+                <input type="date" id="log-end-date" style="background: var(--bg-panel); border: 1px solid var(--border-color); color: var(--text-main); font-size: 11px; padding: 1px;">
+            </div>
         </div>
         <button id="btn-sync-log" class="btn-toolbar" style="background: var(--color-active); color: white; border-color: var(--color-active);">Sync Trades</button>
     </div>

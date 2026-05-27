@@ -1,45 +1,135 @@
-<div id="story-notes-container" class="tab-content" style="display: none; flex-direction: column; flex-grow: 1; min-height: 0;">
+<div id="story-notes-container" class="tab-content" style="display: none; flex-direction: column; flex-grow: 1; min-height: 0; background: var(--bg-app);">
     <!-- Toolbar for Story Notes -->
-    <div class="section-toolbar" style="display: flex; justify-content: space-between; align-items: center; padding: 4px;">
+    <div class="section-toolbar" style="display: flex; justify-content: space-between; align-items: center; padding: 4px; border-bottom: 1px solid var(--border-color); flex-shrink: 0;">
         <div class="filter-group" style="display: flex; gap: 4px; align-items: center;">
-            <label for="story-date-filter" style="font-size: 10px; color: var(--text-muted);">Date:</label>
-            <select id="story-date-filter" style="background: var(--bg-panel); border: 1px solid var(--border-color); color: var(--text-main); font-size: 11px; padding: 2px;">
+            <label for="story-date-filter" style="font-size: 10px; color: var(--text-muted); font-weight: bold;">Date:</label>
+            <select id="story-date-filter" style="background: var(--bg-panel); border: 1px solid var(--border-color); color: var(--text-main); font-size: 11px; padding: 2px; border-radius: 2px; cursor: pointer;">
                 <option value="">Loading dates...</option>
             </select>
-            <label for="story-instance-filter" style="font-size: 10px; color: var(--text-muted); margin-left: 8px;">Instance:</label>
-            <select id="story-instance-filter" style="background: var(--bg-panel); border: 1px solid var(--border-color); color: var(--text-main); font-size: 11px; padding: 2px;">
+            <label for="story-instance-filter" style="font-size: 10px; color: var(--text-muted); margin-left: 8px; font-weight: bold;">Instance:</label>
+            <select id="story-instance-filter" style="background: var(--bg-panel); border: 1px solid var(--border-color); color: var(--text-main); font-size: 11px; padding: 2px; border-radius: 2px; cursor: pointer;">
                 <option value="all">All Instances</option>
             </select>
         </div>
-        <button id="btn-sync-stories" class="btn-toolbar" style="background: var(--color-active); color: white; border-color: var(--color-active);">Refresh</button>
-    </div>
-
-    <!-- Summary Cards -->
-    <div class="summary-cards" style="margin-bottom: 12px;">
-        <div class="metric-card" style="border-left-color: var(--color-active);">
-            <div class="metric-label">Total Profit</div>
-            <div id="story-total-profit" class="metric-value">$0.00</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">Total Trade</div>
-            <div id="story-total-trades" class="metric-value">0</div>
-        </div>
-        <div class="metric-card" style="border-left-color: var(--color-buy);">
-            <div class="metric-label">Win Trade</div>
-            <div id="story-win-trades" class="metric-value">0</div>
-        </div>
-        <div class="metric-card" style="border-left-color: var(--color-sell);">
-            <div class="metric-label">Loss Trade</div>
-            <div id="story-loss-trades" class="metric-value">0</div>
+        <div style="display: flex; gap: 6px;">
+            <button id="btn-print-stories" class="btn-toolbar" style="background: var(--bg-panel); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 2px; font-weight: bold; cursor: pointer; display: flex; align-items: center; gap: 4px; padding: 2px 8px;">
+                <span>🖨️</span> Export PDF
+            </button>
+            <button id="btn-sync-stories" class="btn-toolbar" style="background: var(--color-active); color: white; border-color: var(--color-active); border-radius: 2px; font-weight: bold; cursor: pointer; padding: 2px 10px;">Refresh</button>
         </div>
     </div>
 
-    <!-- Timeline Feed -->
-    <div class="timeline-container" style="flex-grow: 1; overflow: auto; padding: 8px;">
-        <h3 style="margin-top: 0; color: var(--text-main); font-size: 14px;">Trade Log Story</h3>
-        <div id="story-feed" style="display: flex; flex-direction: column; gap: 12px;">
-            <!-- Stories populated by JS -->
-            <div style="color: var(--text-muted); font-size: 12px;">No trades recorded for this date.</div>
+    <!-- Scrollable container for the sheet -->
+    <div style="flex-grow: 1; overflow-y: auto; padding: 20px;">
+        <!-- A4 Page Container -->
+        <div class="a4-sheet">
+            <!-- Watermark or Header Logo -->
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; flex-shrink: 0;">
+                <div>
+                    <span style="font-size: 9px; font-weight: bold; letter-spacing: 1.5px; color: var(--text-muted); text-transform: uppercase;">MT5 System Report</span>
+                    <h2 style="margin: 4px 0 0 0; font-size: 18px; color: var(--text-main); font-weight: 800; font-family: inherit;">DAILY PERFORMANCE & SIGNAL LOG</h2>
+                </div>
+                <div style="text-align: right;">
+                    <div style="font-family: monospace; font-size: 9px; color: var(--text-muted);">
+                        Report Ref: <span id="report-ref-id" style="font-weight: bold;">VTC-2026-LOG</span>
+                    </div>
+                    <div style="font-family: monospace; font-size: 9px; color: var(--text-muted); margin-top: 2px;">
+                        Generated: <span id="report-time" style="font-weight: bold;">--:--:--</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Meta details grid -->
+            <div class="report-meta-grid" style="flex-shrink: 0;">
+                <div class="meta-item">
+                    <span class="meta-label">REPORTING DATE</span>
+                    <span class="meta-value" id="report-date">--</span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-label">MT5 TARGET CHANNEL</span>
+                    <span class="meta-value" id="report-instance">All Instances</span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-label">SYSTEM CONSOLE</span>
+                    <span class="meta-value">MT5 Bridge v1.2</span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-label">STATUS</span>
+                    <span class="meta-value" style="color: var(--color-buy);">VERIFIED LOG</span>
+                </div>
+            </div>
+
+            <!-- Double separator border -->
+            <div style="border-top: 3px double var(--border-color); margin: 20px 0 24px 0; flex-shrink: 0;"></div>
+
+            <!-- Summary Table Section -->
+            <div style="margin-bottom: 30px; flex-shrink: 0;">
+                <h3 class="report-section-title">I. STRATEGY PERFORMANCE SUMMARY</h3>
+                <div style="display: flex; gap: 24px; margin-top: 12px; align-items: stretch;">
+                    
+                    <div style="flex: 1.2;">
+                        <table class="report-table">
+                            <thead>
+                                <tr>
+                                    <th style="text-align: left;">METRIC DESC</th>
+                                    <th style="text-align: right; width: 100px;">VALUE</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td style="font-weight: bold;">Total Net Profit / Loss</td>
+                                    <td id="story-total-profit" style="text-align: right; font-weight: bold;">$0.00</td>
+                                </tr>
+                                <tr>
+                                    <td>Total Signal Groups Executed</td>
+                                    <td id="story-total-trades" style="text-align: right;">0</td>
+                                </tr>
+                                <tr>
+                                    <td>Win Count</td>
+                                    <td id="story-win-trades" style="text-align: right; color: var(--color-buy);">0</td>
+                                </tr>
+                                <tr>
+                                    <td>Loss Count</td>
+                                    <td id="story-loss-trades" style="text-align: right; color: var(--color-sell);">0</td>
+                                </tr>
+                                <tr>
+                                    <td style="font-weight: bold;">Win Rate Percentage</td>
+                                    <td id="story-win-rate" style="text-align: right; font-weight: bold;">0.0%</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <!-- KPI Visual Card -->
+                    <div style="flex: 0.8; border: 1px solid var(--border-color); border-radius: 4px; padding: 16px; background: var(--bg-row-alt); display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; gap: 8px;">
+                        <span style="font-size: 10px; font-weight: bold; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;">Performance Rating</span>
+                        <div id="report-grade" style="font-size: 32px; font-weight: 900; color: var(--color-active);">--</div>
+                        <span id="report-grade-desc" style="font-size: 10px; color: var(--text-muted); line-height: 1.3;">No trades recorded.</span>
+                    </div>
+
+                </div>
+            </div>
+
+            <!-- Chronology Log Section -->
+            <div style="flex-grow: 1; min-height: 0; display: flex; flex-direction: column;">
+                <h3 class="report-section-title" style="flex-shrink: 0;">II. SIGNAL CHRONOLOGY & EXECUTION LOG</h3>
+                <div id="story-feed" style="margin-top: 15px; display: flex; flex-direction: column; gap: 20px; overflow-y: visible;">
+                    <!-- Timeline items injected here -->
+                    <div style="color: var(--text-muted); font-size: 11px; padding: 20px 0; text-align: center; font-style: italic;">
+                        No signals or executions logged for the selected date.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Page Footer -->
+            <div class="report-footer">
+                <div style="border-top: 1px dashed var(--border-color); margin-bottom: 8px; width: 100%;"></div>
+                <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--text-muted); width: 100%;">
+                    <span>VTC Trading Console Document System</span>
+                    <span>CONFIDENTIAL - SYSTEM SIGNAL LOG REPORT</span>
+                    <span>Page 1 of 1</span>
+                </div>
+            </div>
         </div>
     </div>
 </div>
