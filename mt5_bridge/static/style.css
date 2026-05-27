@@ -8,6 +8,7 @@
     --bg-row-alt: #fafafa;
     --bg-row-hover: #e8f0fe;
     --bg-secondary: #f9f9f9;
+    --bg-magic-row: #e6e6e6;
     
     --border-color: #cccccc;
     --border-dark: #999999;
@@ -33,6 +34,7 @@
     --bg-row-alt: #2a2a2b;
     --bg-row-hover: #094771;
     --bg-secondary: #2d2d30;
+    --bg-magic-row: #3a3a3e;
     
     --border-color: #3f3f46;
     --border-dark: #555555;
@@ -240,7 +242,12 @@ body {
 
 .tree-header {
     font-weight: bold;
-    background-color: var(--bg-header) !important;
+    background-color: #0369a1 !important;
+    color: white;
+}
+
+.magic-row {
+    background-color: var(--bg-magic-row) !important;
 }
 
 /* Dense Badges */

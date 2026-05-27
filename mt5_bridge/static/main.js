@@ -623,27 +623,36 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    function getFriendlyStatus(status, isGroup = false) {
+    function getFriendlyStatus(status, isGroup = false, isTP1 = false) {
         if (!status) return 'Unknown';
 
         if (isGroup) {
-            if (status === 'PENDING_ORIGINAL') return 'Original Orders Pending';
-            if (status === 'ACTIVE') return 'Original Trades Live';
-            if (status === 'SUCCESS_TP1_HIT') return 'TP1 Hit (Complete)';
-            if (status === 'RECOVERY_TRIGGERED') return 'Recovery Mode Active';
-            if (status === 'RECOVERY_SUCCESS') return 'Recovery Successful';
-            if (status === 'RECOVERY_FAILED') return 'Recovery Failed';
+            if (status === 'PENDING_ORIGINAL') return 'Orders Pending';
+            if (status === 'ACTIVE') return 'Live (Both Active)';
+            if (status.startsWith('ACTIVE_T2')) return 'Live (T2 Running)';
+            if (status === 'SUCCESS_TP2_HIT') return 'TP2 Hit (Closed)';
+            if (status === 'CLOSED_T2_SL') return 'T2 Stopped (Closed)';
+            if (status === 'SL_HIT') return 'SL Hit (Closed)';
             if (status === 'CANCELLED') return 'Cancelled';
+            if (status === 'FAILED_EXECUTION') return 'Failed Execution';
             return status;
         } else {
-            if (status === 'PENDING_ORIGINAL' || status === 'PENDING (Placed)') return 'Pending';
+            if (status === 'PENDING_ORIGINAL') return 'Pending';
             if (status === 'ACTIVE') return 'Live';
-            if (status === 'SUCCESS_TP1_HIT') return 'TP Hit';
-            if (status === 'RECOVERY_SUCCESS') return 'TP Hit';
-            if (status === 'RECOVERY_FAILED') return 'SL Hit';
+            
+            if (status.startsWith('ACTIVE_T2')) {
+                return isTP1 ? 'TP1 Hit (Closed)' : 'Live';
+            }
+            if (status === 'SUCCESS_TP2_HIT') {
+                return isTP1 ? 'TP1 Hit (Closed)' : 'TP2 Hit (Closed)';
+            }
+            if (status === 'CLOSED_T2_SL') {
+                return isTP1 ? 'TP1 Hit (Closed)' : 'Stopped Out (Closed)';
+            }
             if (status === 'SL_HIT') return 'SL Hit';
             if (status === 'CANCELLED') return 'Cancelled';
-            if (status === 'FAILED_EXECUTION') return 'Failed to Execute';
+            if (status === 'FAILED_EXECUTION') return 'Failed';
+            
             return status;
         }
     }
@@ -707,7 +716,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
 
                         trackerTbody.innerHTML += `
-                            <tr class="tree-toggle" data-node-id="${groupNodeId}">
+                            <tr class="tree-toggle magic-row" data-node-id="${groupNodeId}">
                                 <td class="indent-1">
                                     <span class="toggle-icon ${groupExpanded ? '' : 'collapsed'}">▼</span>
                                     Magic: ${g.magic_number}
@@ -715,16 +724,13 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <td>${g.instance_name}</td>
                                 <td></td>
                                 <td>Trade Group</td>
-                                <td><span class="badge-dense ${getBadgeClass(g.status)}">${getFriendlyStatus(g.status, true)}</span>${retryBtn}</td>
+                                <td><span class="badge-dense ${getBadgeClass(g.status, true)}">${getFriendlyStatus(g.status, true)}</span>${retryBtn}</td>
                             </tr>
                         `;
 
                         if (groupExpanded) {
                             // Compute status for original child trades
                             let childStatus = g.status;
-                            if (g.status === 'RECOVERY_TRIGGERED' || g.status === 'RECOVERY_SUCCESS' || g.status === 'RECOVERY_FAILED') {
-                                childStatus = 'SL_HIT';
-                            }
 
                             // Orig 1
                             trackerTbody.innerHTML += `
@@ -733,7 +739,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     <td></td>
                                     <td>${g.trade_1_ticket || 'N/A'}</td>
                                     <td>Original</td>
-                                    <td><span class="badge-dense ${getBadgeClass(childStatus)}">${getFriendlyStatus(childStatus, false)}</span></td>
+                                    <td><span class="badge-dense ${getBadgeClass(childStatus, false, true)}">${getFriendlyStatus(childStatus, false, true)}</span></td>
                                 </tr>
                             `;
 
@@ -745,45 +751,32 @@ document.addEventListener('DOMContentLoaded', () => {
                                         <td></td>
                                         <td>${g.trade_2_ticket}</td>
                                         <td>Original</td>
-                                        <td><span class="badge-dense ${getBadgeClass(childStatus)}">${getFriendlyStatus(childStatus, false)}</span></td>
+                                        <td><span class="badge-dense ${getBadgeClass(childStatus, false, false)}">${getFriendlyStatus(childStatus, false, false)}</span></td>
                                     </tr>
                                 `;
                             }
-
-                            // Recovery
-                            let recStatus = g.status === 'PENDING_ORIGINAL' && !g.recovery_ticket ? 'PENDING_ORIGINAL' : g.status;
-                            if (g.status === 'SUCCESS_TP1_HIT') recStatus = 'CANCELLED';
-                            else if (g.status === 'RECOVERY_TRIGGERED') recStatus = 'ACTIVE';
-                            else if (g.status === 'CANCELLED') recStatus = 'CANCELLED';
-                            else if (g.recovery_ticket) recStatus = g.status === 'ACTIVE' ? 'PENDING (Placed)' : g.status;
-
-                            let placeBtn = '';
-                            if (g.status === 'ACTIVE' && !g.recovery_ticket) {
-                                placeBtn = `<button class="btn-toolbar btn-place-recovery" data-id="${g.id}" style="padding: 2px 6px; font-size: 10px; margin-left: 5px;">Place</button>`;
-                            }
-
-                            trackerTbody.innerHTML += `
-                                <tr>
-                                    <td class="indent-2">Recovery</td>
-                                    <td></td>
-                                    <td>${g.recovery_ticket || 'N/A'}</td>
-                                    <td>Recovery</td>
-                                    <td><span class="badge-dense ${getBadgeClass(recStatus)}">${getFriendlyStatus(recStatus, false)}</span>${placeBtn}</td>
-                                </tr>
-                            `;
                         }
                     });
                 }
         }
     }
-    function getBadgeClass(status) {
+    function getBadgeClass(status, isGroup = false, isTP1 = false) {
         if (!status) return 'bdg-cancel';
-        if (status === 'ACTIVE') return 'bdg-active';
-        if (status.startsWith('PENDING')) return 'bdg-pending';
-        if (status === 'SUCCESS_TP1_HIT' || status === 'RECOVERY_SUCCESS') return 'bdg-buy';
-        if (status === 'RECOVERY_TRIGGERED' || status === 'RECOVERY_FAILED' || status === 'SL_HIT') return 'bdg-sell';
-        if (status === 'CANCELLED') return 'bdg-cancel';
-        return 'bdg-cancel';
+        if (isGroup) {
+            if (status === 'ACTIVE' || status.startsWith('ACTIVE_T2')) return 'bdg-active';
+            if (status.startsWith('PENDING')) return 'bdg-pending';
+            if (status === 'SUCCESS_TP2_HIT') return 'bdg-buy';
+            if (status === 'CLOSED_T2_SL' || status === 'SL_HIT' || status === 'FAILED_EXECUTION') return 'bdg-sell';
+            return 'bdg-cancel';
+        } else {
+            if (status === 'ACTIVE') return 'bdg-active';
+            if (status.startsWith('ACTIVE_T2')) return isTP1 ? 'bdg-buy' : 'bdg-active';
+            if (status === 'SUCCESS_TP2_HIT') return 'bdg-buy';
+            if (status === 'CLOSED_T2_SL') return isTP1 ? 'bdg-buy' : 'bdg-sell';
+            if (status === 'SL_HIT') return 'bdg-sell';
+            if (status.startsWith('PENDING')) return 'bdg-pending';
+            return 'bdg-cancel';
+        }
     }
 
     // --- Modal Logic ---
