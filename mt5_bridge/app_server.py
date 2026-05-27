@@ -60,6 +60,25 @@ werk_log = logging.getLogger('werkzeug')
 werk_log.setLevel(logging.ERROR)
 
 # --- MT5 LOGIC ---
+def get_unrealized_profit(instance_path=None):
+    """Calculates the total floating profit of all open positions on the MT5 instance."""
+    if instance_path:
+        initialized = mt5.initialize(path=instance_path)
+    else:
+        initialized = mt5.initialize()
+        
+    if not initialized:
+        return 0.0
+        
+    positions = mt5.positions_get()
+    if positions is None or len(positions) == 0:
+        return 0.0
+        
+    total_unrealized = 0.0
+    for pos in positions:
+        total_unrealized += pos.profit + getattr(pos, 'swap', 0.0)
+        
+    return total_unrealized
 def calculate_volume(symbol, entry_price, sl_price, risk_usd, instance_path=None, symbol_suffix=""):
     actual_symbol = symbol + symbol_suffix
     if instance_path:
@@ -249,6 +268,16 @@ def init_db():
         
     try:
         c.execute("ALTER TABLE instances ADD COLUMN accepted_timeframe TEXT DEFAULT 'all'")
+    except sqlite3.OperationalError:
+        pass
+        
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN profit_limit REAL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+        
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN profit_limit_start_time INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
     
@@ -700,9 +729,32 @@ def api_instances():
     c = conn.cursor()
     
     if request.method == 'GET':
-        c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe FROM instances ORDER BY id ASC")
+        try:
+            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time FROM instances ORDER BY id ASC")
+        except sqlite3.OperationalError:
+            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe FROM instances ORDER BY id ASC")
+            
         rows = c.fetchall()
-        instances = [{"id": r[0], "name": r[1], "path": r[2], "risk_usd": r[3], "symbol_mapping": r[4], "auto_trade": r[5], "accepted_timeframe": r[6] or 'all'} for r in rows]
+        instances = []
+        for r in rows:
+            inst_id = r[0]
+            profit_limit = r[7] if len(r) > 7 else 0
+            profit_limit_start_time = r[8] if len(r) > 8 else 0
+            current_profit = 0
+            
+            if profit_limit and profit_limit > 0 and profit_limit_start_time > 0:
+                c.execute("SELECT SUM(profit) FROM trading_log WHERE instance_id = ? AND COALESCE(local_time, time) >= ?", (inst_id, profit_limit_start_time))
+                res = c.fetchone()
+                closed_profit = res[0] if res and res[0] else 0
+                unrealized_profit = get_unrealized_profit(r[2])
+                current_profit = closed_profit + unrealized_profit
+                
+            instances.append({
+                "id": inst_id, "name": r[1], "path": r[2], "risk_usd": r[3], 
+                "symbol_mapping": r[4], "auto_trade": r[5], "accepted_timeframe": r[6] or 'all',
+                "profit_limit": profit_limit or 0, "profit_limit_start_time": profit_limit_start_time or 0,
+                "current_profit": current_profit
+            })
         conn.close()
         return jsonify(instances)
         
@@ -714,15 +766,23 @@ def api_instances():
         symbol_mapping = data.get('symbol_mapping', '{}')
         auto_trade = int(data.get('auto_trade', 0))
         accepted_timeframe = data.get('accepted_timeframe', 'all')
+        profit_limit = float(data.get('profit_limit', 0))
+        import time
+        profit_limit_start_time = int(time.time())
+        
         if not name or not path:
             conn.close()
             return jsonify({"error": "Name and path required"}), 400
             
-        c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe) VALUES (?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe))
+        try:
+            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time))
+        except sqlite3.OperationalError:
+            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe) VALUES (?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe))
+            
         conn.commit()
         new_id = c.lastrowid
         conn.close()
-        return jsonify({"id": new_id, "name": name, "path": path, "risk_usd": risk_usd, "symbol_mapping": symbol_mapping, "auto_trade": auto_trade, "accepted_timeframe": accepted_timeframe}), 201
+        return jsonify({"id": new_id, "name": name, "path": path, "risk_usd": risk_usd, "symbol_mapping": symbol_mapping, "auto_trade": auto_trade, "accepted_timeframe": accepted_timeframe, "profit_limit": profit_limit}), 201
         
     elif request.method == 'PUT':
         data = request.json
@@ -733,12 +793,17 @@ def api_instances():
         symbol_mapping = data.get('symbol_mapping', '{}')
         auto_trade = int(data.get('auto_trade', 0))
         accepted_timeframe = data.get('accepted_timeframe', 'all')
+        profit_limit = float(data.get('profit_limit', 0))
         
         if not instance_id or not name or not path:
             conn.close()
             return jsonify({"error": "ID, name and path required"}), 400
             
-        c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, instance_id))
+        try:
+            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, instance_id))
+        except sqlite3.OperationalError:
+            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, instance_id))
+            
         conn.commit()
         conn.close()
         return jsonify({"status": "success"}), 200
@@ -754,6 +819,28 @@ def api_instances():
         conn.commit()
         conn.close()
         return jsonify({"status": "success"})
+
+@flask_app.route('/api/instances/reset_profit', methods=['POST'])
+def api_instances_reset_profit():
+    data = request.json
+    instance_id = data.get('id')
+    if not instance_id:
+        return jsonify({"error": "ID required"}), 400
+        
+    import time
+    profit_limit_start_time = int(time.time())
+    
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    try:
+        c.execute("UPDATE instances SET profit_limit_start_time=? WHERE id=?", (profit_limit_start_time, instance_id))
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        conn.close()
+        
+    return jsonify({"status": "success"})
 
 @flask_app.route('/api/browse_file', methods=['GET'])
 def api_browse_file():
@@ -906,20 +993,49 @@ def process_signal(data):
     
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
-    c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe FROM instances ORDER BY id ASC")
+    try:
+        c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time FROM instances ORDER BY id ASC")
+    except sqlite3.OperationalError:
+        c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe FROM instances ORDER BY id ASC")
     instances = c.fetchall()
     conn.close()
     
     if not instances:
-        instances = [(None, "Default", None, 100.0, "{}", 0, "all")]
+        instances = [(None, "Default", None, 100.0, "{}", 0, "all", 0, 0)]
         
     auto_results = []
     manual_executions = []
     
     for inst in instances:
-        inst_id, inst_name, inst_path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe = inst
+        inst_id = inst[0]
+        inst_name = inst[1]
+        inst_path = inst[2]
+        risk_usd = inst[3]
+        symbol_mapping = inst[4]
+        auto_trade = inst[5]
+        accepted_timeframe = inst[6]
+        profit_limit = inst[7] if len(inst) > 7 else 0
+        profit_limit_start_time = inst[8] if len(inst) > 8 else 0
+        
         if not accepted_timeframe:
             accepted_timeframe = 'all'
+            
+        if profit_limit and profit_limit > 0 and profit_limit_start_time > 0:
+            conn2 = sqlite3.connect('trades.db')
+            c2 = conn2.cursor()
+            c2.execute("SELECT SUM(profit) FROM trading_log WHERE instance_id = ? AND COALESCE(local_time, time) >= ?", (inst_id, profit_limit_start_time))
+            res = c2.fetchone()
+            closed_profit = res[0] if res and res[0] else 0
+            conn2.close()
+            
+            unrealized_profit = get_unrealized_profit(inst_path)
+            current_profit = closed_profit + unrealized_profit
+            
+            if current_profit >= profit_limit:
+                msg = f"⚠️ {inst_name} has reached its Profit Limit of ${profit_limit}. Current Session Profit: ${current_profit:.2f}. No new trades will be executed."
+                logging.info(msg)
+                send_telegram_message(msg)
+                continue
         
         # Apply symbol mapping if exists
         actual_symbol = symbol

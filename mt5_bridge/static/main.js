@@ -1126,12 +1126,32 @@ document.addEventListener('DOMContentLoaded', () => {
                         ? `<span class="badge-dense bdg-buy" style="margin-left: 5px; font-size: 9px; vertical-align: middle;">Auto (${tfLabel})</span>` 
                         : `<span class="badge-dense bdg-pending" style="margin-left: 5px; font-size: 9px; vertical-align: middle;">Manual Mode</span>`;
 
+                    let profitLimitHtml = '';
+                    if (inst.profit_limit > 0) {
+                        const currentProfit = inst.current_profit || 0;
+                        const pct = Math.min(100, Math.max(0, (currentProfit / inst.profit_limit) * 100));
+                        const profitClass = currentProfit >= inst.profit_limit ? 'color: #fca5a5;' : 'color: #10b981;';
+                        profitLimitHtml = `
+                            <div style="margin-top: 8px; font-size: 11px;">
+                                <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                                    <span style="color: var(--text-muted);">Profit Limit ($${inst.profit_limit})</span>
+                                    <span style="${profitClass}">$${currentProfit.toFixed(2)}</span>
+                                </div>
+                                <div style="width: 100%; height: 4px; background: var(--bg-main); border-radius: 2px; overflow: hidden;">
+                                    <div style="width: ${pct}%; height: 100%; background: ${currentProfit >= inst.profit_limit ? '#ef4444' : '#10b981'};"></div>
+                                </div>
+                                <button class="btn-toolbar btn-reset-profit" data-id="${inst.id}" style="margin-top: 5px; color: #fbbf24; border-color: #92400e; font-size: 9px; padding: 2px 6px;">Reset Session</button>
+                            </div>
+                        `;
+                    }
+
                     const div = document.createElement('div');
                     div.style = 'display: flex; justify-content: space-between; align-items: center; padding: 8px; background: var(--bg-secondary); border: 1px solid var(--border-color); margin-bottom: 5px;';
                     div.innerHTML = `
-                        <div>
+                        <div style="flex: 1;">
                             <strong>${inst.name}</strong> ${autoModeBadge} <span style="font-size: 11px; color: #10b981; margin-left: 5px;">$${inst.risk_usd || 100} Risk</span> ${inst.symbol_suffix ? `<span style="font-size: 11px; color: #64b5f6; margin-left: 5px;">(${inst.symbol_suffix} Suffix)</span>` : ''}<br>
                             <span style="font-size: 10px; color: var(--text-muted);">${inst.path}</span>
+                            ${profitLimitHtml}
                         </div>
                         <div style="display: flex; gap: 5px;">
                             <button class="btn-toolbar btn-edit-inst" data-id="${inst.id}" style="color: #64b5f6; border-color: #1e3a8a;">Edit</button>
@@ -1152,6 +1172,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ id: id })
                 }).then(() => fetchInstances());
+            } else if (e.target.classList.contains('btn-reset-profit')) {
+                const id = e.target.getAttribute('data-id');
+                if (confirm("Are you sure you want to reset the profit tracking session for this instance? It will start tracking from $0 right now.")) {
+                    fetch('/api/instances/reset_profit', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ id: id })
+                    }).then(() => fetchInstances());
+                }
             } else if (e.target.classList.contains('btn-edit-inst')) {
                 const id = e.target.getAttribute('data-id');
                 fetch('/api/instances')
@@ -1162,6 +1191,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             newInstanceName.value = inst.name;
                             newInstancePath.value = inst.path;
                             newInstanceRisk.value = inst.risk_usd || 100;
+                            const newInstanceProfitLimit = document.getElementById('new-instance-profit-limit');
+                            if (newInstanceProfitLimit) newInstanceProfitLimit.value = inst.profit_limit || 0;
                             
                             const newInstanceAuto = document.getElementById('new-instance-auto');
                             if (newInstanceAuto) newInstanceAuto.checked = inst.auto_trade === 1;
@@ -1191,6 +1222,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const name = newInstanceName.value;
             const path = newInstancePath.value;
             const risk_usd = parseFloat(newInstanceRisk.value || 100);
+            const newInstanceProfitLimit = document.getElementById('new-instance-profit-limit');
+            const profit_limit = newInstanceProfitLimit ? parseFloat(newInstanceProfitLimit.value || 0) : 0;
             const autoTradeVal = document.getElementById('new-instance-auto')?.checked ? 1 : 0;
             const acceptedTimeframeVal = newInstanceTimeframe ? newInstanceTimeframe.value : 'all';
             
@@ -1210,7 +1243,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             const editId = btnAddInstance.getAttribute('data-edit-id');
             const method = editId ? 'PUT' : 'POST';
-            const payload = { name, path, risk_usd, symbol_mapping, auto_trade: autoTradeVal, accepted_timeframe: acceptedTimeframeVal };
+            const payload = { name, path, risk_usd, symbol_mapping, auto_trade: autoTradeVal, accepted_timeframe: acceptedTimeframeVal, profit_limit: profit_limit };
             if (editId) payload.id = editId;
 
             fetch('/api/instances', {
@@ -1221,6 +1254,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 newInstanceName.value = '';
                 newInstancePath.value = '';
                 if (newInstanceRisk) newInstanceRisk.value = '100';
+                const newInstanceProfitLimit = document.getElementById('new-instance-profit-limit');
+                if (newInstanceProfitLimit) newInstanceProfitLimit.value = '0';
                 if (newInstanceMapping) newInstanceMapping.value = '';
                 const newInstanceAuto = document.getElementById('new-instance-auto');
                 if (newInstanceAuto) newInstanceAuto.checked = false;
