@@ -162,6 +162,12 @@ body {
     flex-direction: column;
     background: var(--bg-panel);
     border: 1px solid var(--border-color);
+    transition: height 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    overflow: hidden;
+}
+
+.logs-section.collapsed {
+    height: 30px; /* Only show toolbar */
 }
 
 .section-toolbar {

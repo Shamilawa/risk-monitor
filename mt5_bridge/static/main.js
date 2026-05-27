@@ -103,6 +103,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const alertAudio = new Audio('/signal_alert.wav');
     fetchTracker();
     fetchInstances();
+    fetchGlobalSettings();
 
     // Copy Button
     copyBtn.addEventListener('click', () => {
@@ -523,11 +524,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 fetchStoryDates();
             } else {
                 if (filterGroup) {
-                    if (currentTab === 'history') {
-                        filterGroup.style.display = 'none';
-                    } else {
-                        filterGroup.style.display = 'flex';
-                    }
+                    filterGroup.style.display = 'flex';
                 }
                 if (mainTableContainer) mainTableContainer.style.display = 'block';
                 if (logContainer) logContainer.style.display = 'none';
@@ -565,38 +562,25 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderTrackerTable(rows) {
         const trackerThead = document.querySelector('#tracker-table thead');
 
-        if (currentTab === 'history') {
-            trackerThead.innerHTML = `
-                <tr>
-                    <th style="width: 15%;">Symbol</th>
-                    <th style="width: 20%;">Instance</th>
-                    <th style="width: 15%;">Ticket</th>
-                    <th style="width: 20%;">Trade Type</th>
-                    <th style="width: 30%;">Status</th>
-                </tr>
-            `;
-        } else {
-            trackerThead.innerHTML = `
-                <tr>
-                    <th style="width: 20%;">Symbol / Group</th>
-                    <th style="width: 15%;">Instance</th>
-                    <th style="width: 15%;">Ticket</th>
-                    <th style="width: 15%;">Trade Type</th>
-                    <th style="width: 35%;">Status</th>
-                </tr>
-            `;
-        }
+        trackerThead.innerHTML = `
+            <tr>
+                <th style="width: 20%;">Symbol / Group</th>
+                <th style="width: 15%;">Instance</th>
+                <th style="width: 15%;">Ticket</th>
+                <th style="width: 15%;">Trade Type</th>
+                <th style="width: 35%;">Status</th>
+            </tr>
+        `;
 
         trackerTbody.innerHTML = '';
         if (!rows || rows.length === 0) return;
 
-        if (currentTab === 'active') {
-            const symbols = {};
-            rows.forEach(r => {
-                const sym = r.symbol;
-                if (!symbols[sym]) symbols[sym] = [];
-                symbols[sym].push(r);
-            });
+        const symbols = {};
+        rows.forEach(r => {
+            const sym = r.symbol;
+            if (!symbols[sym]) symbols[sym] = [];
+            symbols[sym].push(r);
+        });
 
             for (const [sym, groups] of Object.entries(symbols)) {
                 const symNodeId = `sym_${sym}`;
@@ -701,79 +685,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     });
                 }
-            }
-        } else {
-            // History Tab: Flat list of groups with Symbol column
-            rows.forEach(g => {
-                const groupNodeId = `grp_hist_${g.magic_number}`;
-                const groupExpanded = expandedState[groupNodeId] === true;
-
-                // Group Row (5 columns)
-                trackerTbody.innerHTML += `
-                    <tr class="tree-toggle" data-node-id="${groupNodeId}">
-                        <td>${g.symbol}</td>
-                        <td class="indent-1">
-                            <span class="toggle-icon ${groupExpanded ? '' : 'collapsed'}">▼</span>
-                            Magic: ${g.magic_number} (${g.instance_name})
-                        </td>
-                        <td></td>
-                        <td>Trade Group</td>
-                        <td><span class="badge-dense ${getBadgeClass(g.status)}">${getFriendlyStatus(g.status, true)}</span></td>
-                    </tr>
-                `;
-
-                if (groupExpanded) {
-                    // Compute status for original child trades
-                    let childStatus = g.status;
-                    if (g.status === 'RECOVERY_TRIGGERED' || g.status === 'RECOVERY_SUCCESS' || g.status === 'RECOVERY_FAILED') {
-                        childStatus = 'SL_HIT';
-                    }
-
-                    // Orig 1
-                    trackerTbody.innerHTML += `
-                        <tr>
-                            <td></td>
-                            <td class="indent-2">Orig 1 (TP1)</td>
-                            <td>${g.trade_1_ticket || 'N/A'}</td>
-                            <td>Original</td>
-                            <td><span class="badge-dense ${getBadgeClass(childStatus)}">${getFriendlyStatus(childStatus, false)}</span></td>
-                        </tr>
-                    `;
-
-                    // Orig 2
-                    if (g.trade_2_ticket) {
-                        trackerTbody.innerHTML += `
-                            <tr>
-                                <td></td>
-                                <td class="indent-2">Orig 2 (TP2)</td>
-                                <td>${g.trade_2_ticket}</td>
-                                <td>Original</td>
-                                <td><span class="badge-dense ${getBadgeClass(childStatus)}">${getFriendlyStatus(childStatus, false)}</span></td>
-                            </tr>
-                        `;
-                    }
-
-                    // Recovery
-                    let recStatus = g.status === 'PENDING_ORIGINAL' && !g.recovery_ticket ? 'PENDING_ORIGINAL' : g.status;
-                    if (g.status === 'SUCCESS_TP1_HIT') recStatus = 'CANCELLED';
-                    else if (g.status === 'RECOVERY_TRIGGERED') recStatus = 'ACTIVE';
-                    else if (g.status === 'CANCELLED') recStatus = 'CANCELLED';
-                    else if (g.recovery_ticket) recStatus = g.status === 'ACTIVE' ? 'PENDING (Placed)' : g.status;
-
-                    trackerTbody.innerHTML += `
-                        <tr>
-                            <td></td>
-                            <td class="indent-2">Recovery</td>
-                            <td>${g.recovery_ticket || 'N/A'}</td>
-                            <td>Recovery</td>
-                            <td><span class="badge-dense ${getBadgeClass(recStatus)}">${getFriendlyStatus(recStatus, false)}</span></td>
-                        </tr>
-                    `;
-                }
-            });
         }
     }
-
     function getBadgeClass(status) {
         if (!status) return 'bdg-cancel';
         if (status === 'ACTIVE') return 'bdg-active';
@@ -1003,6 +916,53 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             const heading = document.querySelector('#settings-modal h4');
             if (heading) heading.innerText = "Add New Instance";
+        });
+    }
+
+    function fetchGlobalSettings() {
+        fetch('/api/global_settings')
+            .then(res => res.json())
+            .then(data => {
+                const check = document.getElementById('global-trade-disable');
+                const start = document.getElementById('global-disable-start');
+                const end = document.getElementById('global-disable-end');
+                if(check) check.checked = data.trade_disable;
+                if(start) start.value = data.disable_time_start || '';
+                if(end) end.value = data.disable_time_end || '';
+            })
+            .catch(err => console.error("Error fetching global settings:", err));
+    }
+
+    const btnSaveGlobalSettings = document.getElementById('btn-save-global-settings');
+    if (btnSaveGlobalSettings) {
+        btnSaveGlobalSettings.addEventListener('click', () => {
+            const check = document.getElementById('global-trade-disable').checked;
+            const start = document.getElementById('global-disable-start').value;
+            const end = document.getElementById('global-disable-end').value;
+            
+            btnSaveGlobalSettings.innerText = "Saving...";
+            fetch('/api/global_settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    trade_disable: check ? 1 : 0,
+                    disable_time_start: start,
+                    disable_time_end: end
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                btnSaveGlobalSettings.innerText = "Save Global Settings";
+                if(data.status === 'success') {
+                    alert('Global settings saved!');
+                } else {
+                    alert('Error saving global settings: ' + data.error);
+                }
+            })
+            .catch(err => {
+                btnSaveGlobalSettings.innerText = "Save Global Settings";
+                alert('Request failed: ' + err);
+            });
         });
     }
 
@@ -1316,5 +1276,57 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             })
             .catch(err => console.error("Error fetching story notes:", err));
+    }
+
+    // --- Collapsible Event Log Section ---
+    const logsSection = document.getElementById('logs-section');
+    const btnToggleLogs = document.getElementById('btn-toggle-logs');
+    const logsTabTitle = document.getElementById('logs-tab-title');
+    const logsToggleIcon = document.getElementById('logs-toggle-icon');
+    const logsToggleText = document.getElementById('logs-toggle-text');
+
+    function setLogsCollapsedState(collapsed) {
+        if (!logsSection) return;
+        if (collapsed) {
+            logsSection.classList.add('collapsed');
+            if (logsToggleIcon) logsToggleIcon.innerText = '▲';
+            if (logsToggleText) logsToggleText.innerText = 'Expand';
+        } else {
+            logsSection.classList.remove('collapsed');
+            if (logsToggleIcon) logsToggleIcon.innerText = '▼';
+            if (logsToggleText) logsToggleText.innerText = 'Collapse';
+            // Scroll to bottom when expanded
+            if (logBox) {
+                setTimeout(() => {
+                    logBox.scrollTop = logBox.scrollHeight;
+                }, 200); // match transition duration
+            }
+        }
+    }
+
+    // Load initial state
+    const isLogsCollapsed = localStorage.getItem('logsCollapsed') === 'true';
+    setLogsCollapsedState(isLogsCollapsed);
+
+    function toggleLogs() {
+        if (!logsSection) return;
+        const currentlyCollapsed = logsSection.classList.contains('collapsed');
+        const nextState = !currentlyCollapsed;
+        setLogsCollapsedState(nextState);
+        localStorage.setItem('logsCollapsed', nextState ? 'true' : 'false');
+    }
+
+    if (btnToggleLogs) {
+        btnToggleLogs.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleLogs();
+        });
+    }
+
+    if (logsTabTitle) {
+        logsTabTitle.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleLogs();
+        });
     }
 });

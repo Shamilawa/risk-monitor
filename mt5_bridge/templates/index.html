@@ -39,7 +39,6 @@
                 <div class="section-toolbar" style="display: flex; justify-content: space-between; align-items: center; padding-right: 4px;">
                     <div style="display: flex;">
                         <span class="tab active" data-tab="active">Market Orders</span>
-                        <span class="tab" data-tab="history">History</span>
                         <span class="tab" data-tab="log">Trading Log</span>
                         <span class="tab" data-tab="story">Story Notes</span>
                     </div>
@@ -72,9 +71,14 @@
             </section>
 
             <!-- Logs Section -->
-            <section class="logs-section">
-                <div class="section-toolbar">
-                    <span class="tab active">Event Log</span>
+            <section class="logs-section" id="logs-section">
+                <div class="section-toolbar" style="display: flex; justify-content: space-between; align-items: center; padding-right: 8px;">
+                    <div style="display: flex;">
+                        <span class="tab active" id="logs-tab-title" style="cursor: pointer;">Event Log</span>
+                    </div>
+                    <button id="btn-toggle-logs" class="btn-toolbar" style="padding: 1px 6px; font-size: 10px; height: 18px; line-height: 14px; display: flex; align-items: center; gap: 4px; border-radius: 2px; margin-top: 2px;">
+                        <span id="logs-toggle-icon">▼</span> <span id="logs-toggle-text">Collapse</span>
+                    </button>
                 </div>
                 <div class="log-container" id="log-box">
                     <!-- Logs populated by JS -->
@@ -122,6 +126,26 @@
                 <button id="btn-close-settings" class="btn-toolbar" style="background: none; border: none; color: var(--text-main); cursor: pointer; font-size: 16px;">X</button>
             </div>
             <div class="modal-body">
+                <div style="margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid var(--border-color);">
+                    <h4 style="margin: 0 0 10px 0;">Global Settings</h4>
+                    <div style="display: flex; gap: 8px; flex-direction: column;">
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <input type="checkbox" id="global-trade-disable" style="width: auto; cursor: pointer; margin: 0;">
+                            <label for="global-trade-disable" style="cursor: pointer; font-size: 13px; font-weight: bold; color: var(--color-sell);">Master Trade Disable</label>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px; margin-top: 5px;">
+                            <label style="font-size: 11px; color: var(--text-muted); min-width: 100px;">Disable Time (Start):</label>
+                            <input type="time" id="global-disable-start" style="padding: 4px; background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary);">
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <label style="font-size: 11px; color: var(--text-muted); min-width: 100px;">Disable Time (End):</label>
+                            <input type="time" id="global-disable-end" style="padding: 4px; background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary);">
+                        </div>
+                        <button id="btn-save-global-settings" class="btn btn-action execute" style="margin-top: 5px;">Save Global Settings</button>
+                    </div>
+                </div>
+                
+                <h4 style="margin: 0 0 10px 0;">MT5 Instances</h4>
                 <div class="instance-list" id="instance-list">
                     <!-- Instances injected here -->
                 </div>

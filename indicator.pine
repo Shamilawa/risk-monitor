@@ -185,7 +185,7 @@ if (buy_a1 or buy_a2) and barstate.isconfirmed
     sl_level := lowerATRBand_b
     float risk = entry - sl_level
     float tp1  = entry + (risk * 0.7)
-    float tp2  = entry + (risk * 1.3)
+    float tp2  = entry + (risk * 3.0)
     
     // Draw Entry, SL & TP Dash Lines (2 bars forward)
     line.new(bar_index, entry, bar_index + 2, entry, xloc=xloc.bar_index, color=col_entry, style=line.style_dashed, width=1)
@@ -202,7 +202,7 @@ if (buy_a1 or buy_a2) and barstate.isconfirmed
     // JSON for automated webhook
     string json_msg = '{"action": "buy", "symbol": "' + actual_s + '", "entry": ' + str.tostring(entry) + ', "sl": ' + str.tostring(sl_level) + ', "tp1": ' + str.tostring(tp1) + ', "tp2": ' + str.tostring(tp2) + ', "risk_usd": ' + str.tostring(risk_usd) + ', "timeframe": "' + timeframe.period + '"}'
     
-    string tt  = "Buy " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + "\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + "\nTP2 (1.3R): " + str.tostring(tp2, format.mintick)
+    string tt  = "Buy " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + "\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + "\nTP2 (3.0R): " + str.tostring(tp2, format.mintick)
     
     label.new(bar_index, low, text=show_csv_label ? csv_msg : txt, style=_style_buy, color=color.green, textcolor=color.white, size=_size, tooltip=tt)
     
@@ -220,7 +220,7 @@ if (sell_a1 or sell_a2) and barstate.isconfirmed
     sl_level := upperATRBand_b
     float risk = sl_level - entry
     float tp1  = entry - (risk * 0.7)
-    float tp2  = entry - (risk * 1.3)
+    float tp2  = entry - (risk * 3.0)
     
     // Draw Entry, SL & TP Dash Lines (2 bars forward)
     line.new(bar_index, entry, bar_index + 2, entry, xloc=xloc.bar_index, color=col_entry, style=line.style_dashed, width=1)
@@ -237,7 +237,7 @@ if (sell_a1 or sell_a2) and barstate.isconfirmed
     // JSON for automated webhook
     string json_msg = '{"action": "sell", "symbol": "' + actual_s + '", "entry": ' + str.tostring(entry) + ', "sl": ' + str.tostring(sl_level) + ', "tp1": ' + str.tostring(tp1) + ', "tp2": ' + str.tostring(tp2) + ', "risk_usd": ' + str.tostring(risk_usd) + ', "timeframe": "' + timeframe.period + '"}'
     
-    string tt  = "Sell " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + "\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + "\nTP2 (1.3R): " + str.tostring(tp2, format.mintick)
+    string tt  = "Sell " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + "\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + "\nTP2 (3.0R): " + str.tostring(tp2, format.mintick)
     
     label.new(bar_index, high, text=show_csv_label ? csv_msg : txt, style=_style_sell, color=color.red, textcolor=color.white, size=_size, tooltip=tt)
     
