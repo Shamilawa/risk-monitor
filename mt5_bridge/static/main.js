@@ -888,9 +888,36 @@ document.addEventListener('DOMContentLoaded', () => {
     const newInstanceMapping = document.getElementById('new-instance-mapping');
     const newInstanceTimeframe = document.getElementById('new-instance-timeframe');
 
+    // Tab Switching Logic inside settings modal
+    const settingsTabBtns = document.querySelectorAll('.settings-tab-btn');
+    settingsTabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const targetTab = btn.getAttribute('data-settings-tab');
+            
+            // Toggle active button
+            settingsTabBtns.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            
+            // Toggle active panel
+            const panels = document.querySelectorAll('.settings-panel');
+            panels.forEach(panel => {
+                if (panel.id === `settings-panel-${targetTab}`) {
+                    panel.classList.add('active');
+                } else {
+                    panel.classList.remove('active');
+                }
+            });
+        });
+    });
+
     if (btnSettings) {
         btnSettings.addEventListener('click', () => {
             settingsModal.classList.add('active');
+            
+            // Reset to first tab (Global Settings)
+            const firstTab = document.querySelector('.settings-tab-btn[data-settings-tab="global"]');
+            if (firstTab) firstTab.click();
+            
             fetchInstances();
         });
     }
@@ -914,7 +941,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 btnAddInstance.innerText = "Add Instance";
                 btnAddInstance.removeAttribute('data-edit-id');
             }
-            const heading = document.querySelector('#settings-modal h4');
+            const heading = document.getElementById('heading-add-instance');
             if (heading) heading.innerText = "Add New Instance";
         });
     }
@@ -1062,7 +1089,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             
                             btnAddInstance.innerText = "Save Changes";
                             btnAddInstance.setAttribute('data-edit-id', id);
-                            const heading = document.querySelector('#settings-modal h4');
+                            const heading = document.getElementById('heading-add-instance');
                             if (heading) heading.innerText = "Edit Instance";
                         }
                     });
@@ -1112,7 +1139,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 btnAddInstance.innerText = "Add Instance";
                 btnAddInstance.removeAttribute('data-edit-id');
-                const heading = document.querySelector('#settings-modal h4');
+                const heading = document.getElementById('heading-add-instance');
                 if (heading) heading.innerText = "Add New Instance";
                 
                 fetchInstances();
