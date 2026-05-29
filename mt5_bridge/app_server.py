@@ -487,14 +487,26 @@ def check_trade_group(group, instance_path=None, inst_name="Default", symbol_suf
                 if len(out_deals) > 0:
                     out_deal = out_deals[-1]
                     profit = out_deal.profit
+                    comment = out_deal.comment.lower()
                     conn = sqlite3.connect('trades.db')
                     c = conn.cursor()
-                    if profit > 0:
+                    
+                    if profit > 0 and 'tp' in comment:
                         c.execute("UPDATE trade_groups SET status = 'SUCCESS_TP2_HIT' WHERE id = ?", (group_id,))
                         send_telegram_message(f"🎯 {prefix} {symbol} TP2 (3R) Hit! Trade fully closed.")
                     else:
-                        c.execute("UPDATE trade_groups SET status = 'CLOSED_T2_SL' WHERE id = ?", (group_id,))
-                        send_telegram_message(f"🛑 {prefix} {symbol} T2 Stopped Out.")
+                        if status == 'ACTIVE_T2_SL_MINUS_0_5':
+                            new_s = 'CLOSED_T2_SL_MINUS_0_5'
+                            msg = "-0.5R"
+                        elif status == 'ACTIVE_T2_SL_PLUS_0_25':
+                            new_s = 'CLOSED_T2_SL_PLUS_0_25'
+                            msg = "+0.25R"
+                        else:
+                            new_s = 'CLOSED_T2_SL'
+                            msg = "Break Even / Original"
+                            
+                        c.execute("UPDATE trade_groups SET status = ? WHERE id = ?", (new_s, group_id))
+                        send_telegram_message(f"🛡️ {prefix} {symbol} T2 Stopped Out at {msg}.")
                     conn.commit()
                     conn.close()
                     notify_clients("tracker_update", "update")
@@ -1628,6 +1640,15 @@ def api_story_notes():
     """)
     magic_profits = {row['magic']: row['net_profit'] for row in c.fetchall()}
     
+    # Pre-calculate individual ticket profits grouped by magic (ordered by time)
+    c.execute("SELECT magic, profit FROM trading_log ORDER BY time ASC")
+    magic_deals = {}
+    for row in c.fetchall():
+        m = row['magic']
+        if m not in magic_deals:
+            magic_deals[m] = []
+        magic_deals[m].append(row['profit'])
+    
     conn.close()
     
     total_profit = 0
@@ -1641,6 +1662,10 @@ def api_story_notes():
         magic = tg['magic_number']
         pl = magic_profits.get(magic, 0)
         
+        deals = magic_deals.get(magic, [])
+        t1_pl = deals[0] if len(deals) > 0 else None
+        t2_pl = deals[1] if len(deals) > 1 else None
+        
         if pl > 0:
             win_trades += 1
         elif pl < 0:
@@ -1650,12 +1675,20 @@ def api_story_notes():
         
         story = {
             'id': idx + 1,
+            'magic': magic,
             'time': tg['created_at'].split(' ')[1] if tg['created_at'] else "Unknown",
             'mode': tg['execution_mode'] or "Unknown",
             'symbol': tg['symbol'],
+            'action': tg['action'],
+            'entry': tg['entry_price'],
+            'sl': tg['sl'],
+            'tp1': tg['tp1'],
+            'tp2': tg['tp2'],
             'timeframe': tg['signal_timeframe'] or "Unknown",
             'status': tg['status'],
-            'pl': round(pl, 2)
+            'pl': round(pl, 2),
+            't1_pl': round(t1_pl, 2) if t1_pl is not None else None,
+            't2_pl': round(t2_pl, 2) if t2_pl is not None else None
         }
         stories.append(story)
         

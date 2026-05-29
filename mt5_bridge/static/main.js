@@ -1475,10 +1475,21 @@ document.addEventListener('DOMContentLoaded', () => {
                         progressionHTML += `<li class="report-timeline-item hit">Price reached 2.5R! Trade 2 Stop Loss trailed to +0.25R.</li>`;
                         progressionHTML += `<li class="report-timeline-item hit">🎯 Take Profit 2 (3.0R) hit! Trade 2 closed, securing remaining 50% profit.</li>`;
                         progressionHTML += `<li class="report-timeline-item hit">🎉 Trade group completed successfully with full profit targets!</li>`;
+                    } else if (s.status === 'CLOSED_T2_SL_PLUS_0_25') {
+                        progressionHTML += `<li class="report-timeline-item hit">🔄 Entry price filled! Both Trade 1 and Trade 2 active.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">✅ Take Profit 1 (0.7R) hit! Trade 1 closed, securing 50% profit.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">🛡️ Price reached 1.3R! Trade 2 Stop Loss trailed to -0.5R.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">🛡️ Price reached 2.5R! Trade 2 Stop Loss trailed to +0.25R.</li>`;
+                        progressionHTML += `<li class="report-timeline-item stopped">🛑 Trade 2 stopped out at trailed Stop Loss (+0.25R).</li>`;
+                    } else if (s.status === 'CLOSED_T2_SL_MINUS_0_5') {
+                        progressionHTML += `<li class="report-timeline-item hit">🔄 Entry price filled! Both Trade 1 and Trade 2 active.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">✅ Take Profit 1 (0.7R) hit! Trade 1 closed, securing 50% profit.</li>`;
+                        progressionHTML += `<li class="report-timeline-item hit">🛡️ Price reached 1.3R! Trade 2 Stop Loss trailed to -0.5R.</li>`;
+                        progressionHTML += `<li class="report-timeline-item stopped">🛑 Trade 2 stopped out at trailed Stop Loss (-0.5R).</li>`;
                     } else if (s.status === 'CLOSED_T2_SL') {
                         progressionHTML += `<li class="report-timeline-item hit">🔄 Entry price filled! Both Trade 1 and Trade 2 active.</li>`;
                         progressionHTML += `<li class="report-timeline-item hit">✅ Take Profit 1 (0.7R) hit! Trade 1 closed, securing 50% profit.</li>`;
-                        progressionHTML += `<li class="report-timeline-item stopped">🛑 Trade 2 stopped out at trailed Stop Loss.</li>`;
+                        progressionHTML += `<li class="report-timeline-item stopped">🛑 Trade 2 stopped out at trailed Stop Loss (Break Even).</li>`;
                     } else if (s.status === 'CLOSED_SL') {
                         progressionHTML += `<li class="report-timeline-item hit">🔄 Entry price filled! Both Trade 1 and Trade 2 active.</li>`;
                         progressionHTML += `<li class="report-timeline-item stopped">🛑 Original Stop Loss hit! Both Trade 1 and Trade 2 stopped out.</li>`;
@@ -1506,18 +1517,173 @@ document.addEventListener('DOMContentLoaded', () => {
                     const plSign = s.pl > 0 ? '+' : '';
                     progressionHTML += `<li style="margin-top: 6px; list-style: none;">💰 <strong>[P&L: <span style="color: ${plColor};">${plSign}$${s.pl.toFixed(2)}</span>]</strong></li>`;
                     
+                    // 4. Trade Path Diagram
+                    let diagramHTML = '';
+                    if (s.entry && s.sl && s.tp1 && s.tp2) {
+                        const isBuy = (s.action || 'BUY').toUpperCase() === 'BUY';
+                        const range = Math.abs(s.tp2 - s.sl) || 1;
+                        const getPct = (p) => isBuy ? ((p - s.sl) / range) * 100 : ((s.sl - p) / range) * 100;
+                        
+                        const bSL = 0;
+                        const bEntry = getPct(s.entry);
+                        const bTP1 = getPct(s.tp1);
+                        const bTP2 = 100;
+                        
+                        const rSize = Math.abs(bEntry - bSL); // Size of 1R in %
+                        
+                        let a1Class = 'active';
+                        let a1Target = bEntry + 5;
+                        let a2Class = 'active';
+                        let a2Target = bEntry + 5;
+                        
+                        let a1Dir = 'right';
+                        let a2Dir = 'right';
+                        
+                        let dist1 = 0;
+                        let dist2 = 0;
+                        
+                        if (s.status === 'SUCCESS_TP2_HIT') {
+                            a1Class = 'win'; a1Target = bTP1;
+                            a2Class = 'win'; a2Target = bTP2;
+                            dist1 = Math.abs(s.tp1 - s.entry);
+                            dist2 = Math.abs(s.tp2 - s.entry);
+                        } else if (s.status === 'SUCCESS_TP1_HIT' || s.status === 'RECOVERY_SUCCESS') {
+                            a1Class = 'win'; a1Target = bTP1;
+                            a2Class = 'win'; a2Target = bTP1;
+                            dist1 = Math.abs(s.tp1 - s.entry);
+                        } else if (s.status.startsWith('CLOSED_T2_SL')) {
+                            a1Class = 'win'; a1Target = bTP1;
+                            a2Class = 'loss'; a2Dir = 'left';
+                            
+                            if (s.status === 'CLOSED_T2_SL_PLUS_0_25') {
+                                a2Class = 'win'; a2Dir = 'right';
+                                a2Target = bEntry + (rSize * 0.25);
+                                dist2 = Math.abs(s.entry - s.sl) * 0.25;
+                            } else if (s.status === 'CLOSED_T2_SL_MINUS_0_5') {
+                                a2Target = bEntry - (rSize * 0.5);
+                                dist2 = Math.abs(s.entry - s.sl) * -0.5;
+                            } else {
+                                a2Target = bEntry - (rSize * 0.1);
+                                dist2 = Math.abs(s.entry - s.sl) * -0.1;
+                            }
+                            dist1 = Math.abs(s.tp1 - s.entry);
+                        } else if (s.status.startsWith('ACTIVE_T2')) {
+                            a1Class = 'win'; a1Target = bTP1;
+                            a2Class = 'active'; a2Target = bTP1 + 5;
+                            dist1 = Math.abs(s.tp1 - s.entry);
+                        } else if (s.status === 'ACTIVE') {
+                            a1Class = 'active'; a1Target = bEntry + 5;
+                            a2Class = 'active'; a2Target = bEntry + 5;
+                        } else if (s.status === 'CLOSED_SL' || s.status === 'SL_HIT' || s.status === 'RECOVERY_FAILED') {
+                            a1Class = 'loss'; a1Target = bSL; a1Dir = 'left';
+                            a2Class = 'loss'; a2Target = bSL; a2Dir = 'left';
+                            dist1 = -Math.abs(s.entry - s.sl);
+                            dist2 = -Math.abs(s.entry - s.sl);
+                        } else if (s.status === 'PENDING_ORIGINAL' || s.status === 'CANCELLED') {
+                            a1Class = 'neutral'; a1Target = bEntry;
+                            a2Class = 'neutral'; a2Target = bEntry;
+                        }
+                        
+                        let t1_pl = (s.t1_pl !== undefined && s.t1_pl !== null) ? s.t1_pl : undefined;
+                        let t2_pl = (s.t2_pl !== undefined && s.t2_pl !== null) ? s.t2_pl : undefined;
+                        
+                        // Fallback to calculation if DB values are missing but we have a total s.pl
+                        if (t1_pl === undefined && t2_pl === undefined && s.pl) {
+                            const totalDist = dist1 + dist2;
+                            if (totalDist !== 0) {
+                                t1_pl = s.pl * (dist1 / totalDist);
+                                t2_pl = s.pl * (dist2 / totalDist);
+                            } else {
+                                t1_pl = s.pl / 2;
+                                t2_pl = s.pl / 2;
+                            }
+                        }
+                        
+                        const rDist = Math.abs(s.entry - s.sl) || 1;
+                        const rGain1 = dist1 / rDist;
+                        const rGain2 = dist2 / rDist;
+                        
+                        const renderArrow = (cls, dir, target, isA2, plAmt, rGain) => {
+                            if (target === bEntry) return '';
+                            const left = Math.min(bEntry, target);
+                            const width = Math.abs(bEntry - target);
+                            const topPos = isA2 ? '70%' : '30%';
+                            
+                            let tooltipHTML = '';
+                            if (cls !== 'active' && cls !== 'neutral' && plAmt !== undefined && plAmt !== null && rGain !== undefined) {
+                                const sign = plAmt > 0 ? '+' : '';
+                                const rSign = rGain > 0 ? '+' : '';
+                                const color = plAmt > 0 ? 'var(--color-buy)' : (plAmt < 0 ? 'var(--color-sell)' : 'var(--text-main)');
+                                tooltipHTML = `
+                                    <div class="h-tooltip">
+                                        <div style="font-size: 10px; color: var(--text-muted); margin-bottom: 2px;">Trade ${isA2 ? '2' : '1'}</div>
+                                        <div style="font-size: 11px; font-weight: bold; color: ${color};">
+                                            ${sign}$${Math.abs(plAmt).toFixed(2)} <span style="font-size: 9px; opacity: 0.8;">(${rSign}${rGain.toFixed(2)}R)</span>
+                                        </div>
+                                    </div>
+                                `;
+                            }
+                            
+                            return `<div class="h-arrow ${cls} ${dir}" style="top: ${topPos}; left: ${left}%; width: ${width}%;">${tooltipHTML}</div>`;
+                        };
+                        
+                        let tslHTML = '';
+                        if (s.status.startsWith('CLOSED_T2_SL')) {
+                            let tslPct = bEntry;
+                            if (s.status === 'CLOSED_T2_SL_PLUS_0_25') {
+                                tslPct = bEntry + (rSize * 0.25);
+                            } else if (s.status === 'CLOSED_T2_SL_MINUS_0_5') {
+                                tslPct = bEntry - (rSize * 0.5);
+                            } else {
+                                tslPct = bEntry - (rSize * 0.1);
+                            }
+                            
+                            const color = s.status === 'CLOSED_T2_SL_PLUS_0_25' ? 'var(--color-buy)' : 'var(--color-sell)';
+                            tslHTML = `
+                                <div class="h-level" style="left: ${tslPct}%; border-left-color: ${color};">
+                                    <div class="h-label" style="color: ${color};">TSL</div>
+                                </div>
+                            `;
+                        }
+                        
+                        diagramHTML = `
+                            <div class="h-chart">
+                                <div class="h-canvas">
+                                    <div class="h-level" style="left: ${bSL}%;">
+                                        <div class="h-label">SL</div>
+                                    </div>
+                                    <div class="h-level solid" style="left: ${bEntry}%;">
+                                        <div class="h-label">Entry</div>
+                                    </div>
+                                    <div class="h-level" style="left: ${bTP1}%;">
+                                        <div class="h-label">TP1</div>
+                                    </div>
+                                    <div class="h-level" style="left: ${bTP2}%;">
+                                        <div class="h-label">TP2</div>
+                                    </div>
+                                    ${tslHTML}
+                                    
+                                    ${renderArrow(a1Class, a1Dir, a1Target, false, t1_pl, rGain1)}
+                                    ${renderArrow(a2Class, a2Dir, a2Target, true, t2_pl, rGain2)}
+                                </div>
+                            </div>
+                        `;
+                    }
+                    
                     const cardHTML = `
                         <div style="margin-bottom: 20px; page-break-inside: avoid;">
                             <div style="font-size: 11px; color: var(--text-main); font-weight: bold; padding-bottom: 4px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between;">
                                 <span>SIGNAL GROUP #${s.id}: ${s.symbol} (${s.timeframe})</span>
                                 <span style="font-family: monospace; color: var(--text-muted);">${s.time} LOCAL</span>
                             </div>
-                            <div style="font-size: 10px; color: var(--text-muted); margin-top: 4px; margin-bottom: 6px;">
-                                Mode: ${s.mode === 'Auto' ? 'Automated Execution' : 'Manual Execution'}
+                            <div style="font-size: 10px; color: var(--text-muted); margin-top: 4px; margin-bottom: 6px; display: flex; gap: 12px;">
+                                <span>Mode: ${s.mode === 'Auto' ? 'Automated Execution' : 'Manual Execution'}</span>
+                                <span>Magic: <span style="font-family: monospace; color: var(--text-main);">${s.magic || 'N/A'}</span></span>
                             </div>
                             <ul class="report-timeline">
                                 ${progressionHTML}
                             </ul>
+                            ${diagramHTML}
                         </div>
                     `;
                     feed.innerHTML += cardHTML;

@@ -1051,6 +1051,166 @@ input:checked + .slider:before {
     width: 100%;
 }
 
+/* --- Horizontal Chart Diagram (X-axis Price) --- */
+.h-chart {
+    margin-top: 15px;
+    margin-bottom: 5px;
+    padding: 10px 20px 35px 20px; /* Reduced top padding, kept bottom for labels */
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    position: relative;
+    width: 100%;
+    height: 120px;
+    box-sizing: border-box;
+    display: flex;
+    justify-content: center;
+}
+
+.h-canvas {
+    position: relative;
+    width: 100%;
+    max-width: 600px;
+    height: 100%;
+}
+
+.h-level {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-left: 1px dashed var(--border-dark);
+    z-index: 1;
+}
+
+.h-level.solid {
+    border-left: 2px solid var(--border-dark);
+}
+
+.h-label {
+    position: absolute;
+    bottom: -22px;
+    left: -20px;
+    font-size: 10px;
+    font-weight: bold;
+    color: var(--text-main);
+    width: 40px;
+    text-align: center;
+}
+
+.h-label.top {
+    bottom: auto;
+    top: -22px;
+}
+
+/* Horizontal arrows */
+.h-arrow {
+    position: absolute;
+    height: 2px;
+    background-color: var(--border-dark);
+    z-index: 2;
+}
+
+.h-arrow::after {
+    content: '';
+    position: absolute;
+    top: -4px;
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+}
+
+/* Right-pointing Arrow */
+.h-arrow.right::after {
+    right: -4px;
+    border-left: 5px solid;
+    border-left-color: inherit;
+}
+
+/* Left-pointing Arrow */
+.h-arrow.left::after {
+    left: -4px;
+    border-right: 5px solid;
+    border-right-color: inherit;
+}
+
+.h-arrow.win { background-color: var(--color-buy); color: var(--color-buy); }
+.h-arrow.loss { background-color: var(--color-sell); color: var(--color-sell); }
+.h-arrow.active { background-color: var(--color-active); color: var(--color-active); }
+.h-arrow.neutral { background-color: var(--color-pending); color: var(--color-pending); }
+
+/* Arrow Hover Effects */
+.h-arrow {
+    transition: height 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+    cursor: pointer;
+}
+
+.h-arrow::before {
+    /* Invisible expanded hit area for easier hovering */
+    content: '';
+    position: absolute;
+    top: -10px;
+    bottom: -10px;
+    left: 0;
+    right: 0;
+    z-index: 1;
+}
+
+.h-arrow:hover {
+    height: 3px;
+    box-shadow: 0 0 6px currentColor;
+    z-index: 10;
+}
+
+/* Custom Tooltip */
+.h-tooltip {
+    visibility: hidden;
+    opacity: 0;
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(-5px);
+    background-color: var(--bg-panel);
+    color: var(--text-main);
+    border: 1px solid var(--border-dark);
+    text-align: center;
+    border-radius: 6px;
+    padding: 6px 10px;
+    white-space: nowrap;
+    z-index: 100;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.5);
+    pointer-events: none;
+    font-family: inherit;
+}
+
+.h-arrow:hover .h-tooltip {
+    visibility: visible;
+    opacity: 1;
+    transform: translateX(-50%) translateY(-10px);
+}
+
+/* Tooltip caret */
+.h-tooltip::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    margin-left: -5px;
+    border-width: 5px;
+    border-style: solid;
+    border-color: var(--bg-panel) transparent transparent transparent;
+}
+.h-tooltip::before {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    margin-left: -6px;
+    border-width: 6px;
+    border-style: solid;
+    border-color: var(--border-dark) transparent transparent transparent;
+    z-index: -1;
+}
+
 /* Print Media Styles */
 @media print {
     body {
