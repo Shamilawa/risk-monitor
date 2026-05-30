@@ -45,8 +45,6 @@ risk_usd       = input.float(100.0, "Risk Amount ($)", minval=1.0, step=10.0, gr
 use_json_alert = input.bool(true, "Send JSON Alerts (for MT5 Bridge)", group=group_auto)
 show_csv_label = input.bool(false, "Copy Mode: Show CSV on Labels", group=group_auto, tooltip="When enabled, labels will display the raw CSV string for manual copying to MT5.")
 
-
-
 int   atrPeriod_b      = input.int(3, "ATR Period (Bands)", minval=1, group=group_atr, tooltip="ATR value calculation period for the bands.")
 float atrMultiplier_b  = input.float(2.5, "ATR Band Scale Factor", step=0.1, minval=0.01, group=group_atr, tooltip="Scaling factor for the ATR bands.")
 bool  showTPBands_b    = input.bool(false, "Show Take-Profit Bands", group=group_atr)
@@ -123,6 +121,18 @@ bool a1_stack_bear = ema21 < ema50 and ema50 < ema200
 bool a2_stack_bull = ema21 > ema50 and ema50 > ema200 
 bool a2_stack_bear = ema21 < ema50 and ema50 < ema200
 
+// NEW: EMA Directional Slope Logic
+// We use a lookback (e.g., 5 bars) to ensure the EMA is genuinely pointing up/down,
+// avoiding 1-bar fakeouts caused by a sudden strong candle in the opposite direction.
+int slope_bars = 5
+bool ema50_up    = ta.change(ema50, slope_bars) > 0
+bool ema200_up   = ta.change(ema200, slope_bars) > 0
+bool ema50_down  = ta.change(ema50, slope_bars) < 0
+bool ema200_down = ta.change(ema200, slope_bars) < 0
+
+bool ema_dir_bull = ema50_up and ema200_up
+bool ema_dir_bear = ema50_down and ema200_down
+
 // D. Zone Touches
 bool touch_a1_bull = low <= ema21 and low >= ema50 
 bool touch_a1_bear = high >= ema21 and high <= ema50
@@ -141,12 +151,12 @@ if close > ema21
 if close < ema21
     can_take_short := true
 
-// Master Trigger Conditions
-bool buy_a1 = a1_stack_bull and time_allowed and touch_a1_bull and ha_long_valid and vol_allowed and can_take_long
-bool buy_a2 = a2_stack_bull and time_allowed and touch_a2_bull and ha_long_valid and vol_allowed and can_take_long
+// Master Trigger Conditions (Now including EMA Direction Filter)
+bool buy_a1 = a1_stack_bull and time_allowed and touch_a1_bull and ha_long_valid and vol_allowed and can_take_long and ema_dir_bull
+bool buy_a2 = a2_stack_bull and time_allowed and touch_a2_bull and ha_long_valid and vol_allowed and can_take_long and ema_dir_bull
 
-bool sell_a1 = a1_stack_bear and time_allowed and touch_a1_bear and ha_short_valid and vol_allowed and can_take_short
-bool sell_a2 = a2_stack_bear and time_allowed and touch_a2_bear and ha_short_valid and vol_allowed and can_take_short
+bool sell_a1 = a1_stack_bear and time_allowed and touch_a1_bear and ha_short_valid and vol_allowed and can_take_short and ema_dir_bear
+bool sell_a2 = a2_stack_bear and time_allowed and touch_a2_bear and ha_short_valid and vol_allowed and can_take_short and ema_dir_bear
 
 // -----------------------------------------------------------------------------
 // 5. VISUAL STYLE LOGIC
@@ -185,7 +195,7 @@ if (buy_a1 or buy_a2) and barstate.isconfirmed
     sl_level := lowerATRBand_b
     float risk = entry - sl_level
     float tp1  = entry + (risk * 0.7)
-    float tp2  = entry + (risk * 3.0)
+    float tp2  = entry + (risk * 1.75)
     
     // Draw Entry, SL & TP Dash Lines (2 bars forward)
     line.new(bar_index, entry, bar_index + 2, entry, xloc=xloc.bar_index, color=col_entry, style=line.style_dashed, width=1)
@@ -202,7 +212,11 @@ if (buy_a1 or buy_a2) and barstate.isconfirmed
     // JSON for automated webhook
     string json_msg = '{"action": "buy", "symbol": "' + actual_s + '", "entry": ' + str.tostring(entry) + ', "sl": ' + str.tostring(sl_level) + ', "tp1": ' + str.tostring(tp1) + ', "tp2": ' + str.tostring(tp2) + ', "risk_usd": ' + str.tostring(risk_usd) + ', "timeframe": "' + timeframe.period + '"}'
     
-    string tt  = "Buy " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + "\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + "\nTP2 (3.0R): " + str.tostring(tp2, format.mintick)
+    float risk_pips = risk / (syminfo.mintick * 10)
+    float tp1_pips  = risk_pips * 0.7
+    float tp2_pips  = risk_pips * 1.75
+    
+    string tt  = "Buy " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + " (" + str.tostring(risk_pips, "#.0") + " pips)\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + " (" + str.tostring(tp1_pips, "#.0") + " pips)\nTP2 (1.75R): " + str.tostring(tp2, format.mintick) + " (" + str.tostring(tp2_pips, "#.0") + " pips)"
     
     label.new(bar_index, low, text=show_csv_label ? csv_msg : txt, style=_style_buy, color=color.green, textcolor=color.white, size=_size, tooltip=tt)
     
@@ -220,7 +234,7 @@ if (sell_a1 or sell_a2) and barstate.isconfirmed
     sl_level := upperATRBand_b
     float risk = sl_level - entry
     float tp1  = entry - (risk * 0.7)
-    float tp2  = entry - (risk * 3.0)
+    float tp2  = entry - (risk * 1.75)
     
     // Draw Entry, SL & TP Dash Lines (2 bars forward)
     line.new(bar_index, entry, bar_index + 2, entry, xloc=xloc.bar_index, color=col_entry, style=line.style_dashed, width=1)
@@ -237,7 +251,11 @@ if (sell_a1 or sell_a2) and barstate.isconfirmed
     // JSON for automated webhook
     string json_msg = '{"action": "sell", "symbol": "' + actual_s + '", "entry": ' + str.tostring(entry) + ', "sl": ' + str.tostring(sl_level) + ', "tp1": ' + str.tostring(tp1) + ', "tp2": ' + str.tostring(tp2) + ', "risk_usd": ' + str.tostring(risk_usd) + ', "timeframe": "' + timeframe.period + '"}'
     
-    string tt  = "Sell " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + "\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + "\nTP2 (3.0R): " + str.tostring(tp2, format.mintick)
+    float risk_pips = risk / (syminfo.mintick * 10)
+    float tp1_pips  = risk_pips * 0.7
+    float tp2_pips  = risk_pips * 1.75
+
+    string tt  = "Sell " + txt + "\nSL: " + str.tostring(sl_level, format.mintick) + " (" + str.tostring(risk_pips, "#.0") + " pips)\nTP1 (0.7R): " + str.tostring(tp1, format.mintick) + " (" + str.tostring(tp1_pips, "#.0") + " pips)\nTP2 (1.75R): " + str.tostring(tp2, format.mintick) + " (" + str.tostring(tp2_pips, "#.0") + " pips)"
     
     label.new(bar_index, high, text=show_csv_label ? csv_msg : txt, style=_style_sell, color=color.red, textcolor=color.white, size=_size, tooltip=tt)
     
@@ -248,12 +266,9 @@ if (sell_a1 or sell_a2) and barstate.isconfirmed
     can_take_short := false
     trade_active   := true
 
-// Live TP/SL Lines (Removed as per request)
-
 // --- ATR BANDS PLOTTING ---
 plot(upperATRBand_b, "Upper ATR Band", color.new(color.gray, 75), 1)
 plot(lowerATRBand_b, "Lower ATR Band", color.new(color.gray, 75), 1)
-// TP Band plots removed
 
 // Dashboard
 var table dash = table.new(position.bottom_right, 2, 4, bgcolor=color.new(color.black, 50))
