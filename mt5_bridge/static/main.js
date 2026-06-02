@@ -598,26 +598,20 @@ document.addEventListener('DOMContentLoaded', () => {
             const mainTableContainer = document.querySelector('.grid-section > .table-container');
             const logContainer = document.getElementById('trading-log-container');
             const storyContainer = document.getElementById('story-notes-container');
+            if (filterGroup) filterGroup.style.display = 'none';
+            if (mainTableContainer) mainTableContainer.style.display = 'none';
+            if (logContainer) logContainer.style.display = 'none';
+            if (storyContainer) storyContainer.style.display = 'none';
 
             if (currentTab === 'log') {
-                if (filterGroup) filterGroup.style.display = 'none';
-                if (mainTableContainer) mainTableContainer.style.display = 'none';
-                if (storyContainer) storyContainer.style.display = 'none';
                 if (logContainer) logContainer.style.display = 'flex';
                 fetchPerformance();
             } else if (currentTab === 'story') {
-                if (filterGroup) filterGroup.style.display = 'none';
-                if (mainTableContainer) mainTableContainer.style.display = 'none';
-                if (logContainer) logContainer.style.display = 'none';
                 if (storyContainer) storyContainer.style.display = 'flex';
                 fetchStoryDates();
             } else {
-                if (filterGroup) {
-                    filterGroup.style.display = 'flex';
-                }
+                if (filterGroup) filterGroup.style.display = 'flex';
                 if (mainTableContainer) mainTableContainer.style.display = 'block';
-                if (logContainer) logContainer.style.display = 'none';
-                if (storyContainer) storyContainer.style.display = 'none';
                 fetchTracker();
             }
         });
@@ -1752,3 +1746,4 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 });
+

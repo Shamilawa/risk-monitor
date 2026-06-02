@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manual Backtesting Simulator</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+    <div class="app-container">
+        <!-- Condensed Control Bar -->
+        <header class="toolbar">
+            <div class="toolbar-left">
+                <span class="app-title">Manual Backtesting Simulator</span>
+                <button id="theme-toggle" class="btn-toolbar">Toggle Dark Mode</button>
+            </div>
+            
+            <div class="toolbar-right">
+                <a href="/" class="btn-toolbar" style="text-decoration: none; color: inherit;">← Back to Live Console</a>
+            </div>
+        </header>
+
+        <!-- Main Workspace -->
+        <div class="workspace" style="padding: 15px;">
+            
+            <div id="backtester-container" style="display: flex; flex-direction: column; flex: 1;">
+                <!-- Session Management Top Bar -->
+                <div class="section-toolbar" style="margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <label for="backtest-session-select" style="font-size: 11px; color: var(--text-muted);">Session:</label>
+                        <select id="backtest-session-select" style="padding: 2px 5px; font-size: 11px; background: var(--bg-surface); color: var(--text-main); border: 1px solid var(--border-color);"></select>
+                        <button id="btn-new-session" class="btn-toolbar" style="font-size: 11px; padding: 2px 8px;">+ New Session</button>
+                        <button id="btn-clear-bt-session" class="btn-toolbar" style="font-size: 11px; padding: 2px 8px; color: var(--color-sell); border-color: var(--color-sell); display: none;">Clear Session</button>
+                    </div>
+                    <div style="font-size: 11px; color: var(--text-muted);">
+                        Current Balance: <span id="backtest-current-balance" style="color: var(--color-active); font-weight: bold;">$0.00</span>
+                    </div>
+                </div>
+
+                <!-- Summary Cards -->
+                <div class="summary-cards" style="margin-bottom: 15px;">
+                    <div class="metric-card" style="border-left-color: var(--color-active);">
+                        <div class="metric-label">Overall Gains</div>
+                        <div id="bt-metric-gains" class="metric-value">$0.00 <span style="font-size: 10px; color: var(--text-muted);">(0.00%)</span></div>
+                    </div>
+                    <div class="metric-card" style="border-left-color: var(--color-pending);">
+                        <div class="metric-label">Win Rate</div>
+                        <div id="bt-metric-winrate" class="metric-value">0% <span style="font-size: 10px; color: var(--text-muted);">(0W 0L)</span></div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Profit Factor</div>
+                        <div id="bt-metric-profit-factor" class="metric-value">0.00</div>
+                    </div>
+                    <div class="metric-card" style="border-left-color: var(--color-sell);">
+                        <div class="metric-label">Max Drawdown</div>
+                        <div id="bt-metric-drawdown" class="metric-value">0.00%</div>
+                    </div>
+                    <div class="metric-card" style="border-left-color: var(--color-buy);">
+                        <div class="metric-label">Avg R:R</div>
+                        <div id="bt-metric-rr" class="metric-value">0.00 <span style="font-size: 10px; color: var(--text-muted);">($0 / $0)</span></div>
+                    </div>
+                </div>
+
+                <!-- Main Flex Container -->
+                <div style="display: flex; gap: 15px; align-items: flex-start;">
+                    
+                    <!-- Data Grid -->
+                    <div class="table-container" style="flex: 1;">
+                        <table class="data-grid" id="backtester-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Risk</th>
+                                    <th>SL</th>
+                                    <th>T1 / T2</th>
+                                    <th>Rec. Outcome</th>
+                                    <th>P&L</th>
+                                    <th>Balance</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="backtester-tbody">
+                                <!-- Rows injected by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Trade Input Form (Sidebar) -->
+                    <div class="setting-card" style="width: 280px; padding: 15px; flex-shrink: 0; box-sizing: border-box;">
+                        <span class="card-title" style="margin-bottom: 15px; display: block;">New Backtest Trade</span>
+                        <div style="display: flex; flex-direction: column; gap: 12px;">
+                            <div class="input-field-group">
+                                <label>Risk Type</label>
+                                <select id="bt-risk-type" style="width: 100%;">
+                                    <option value="$">$ Amount</option>
+                                    <option value="%">% of Balance</option>
+                                </select>
+                            </div>
+                            <div class="input-field-group">
+                                <label>Risk Value</label>
+                                <input type="number" id="bt-risk-value" value="100" style="width: 100%;">
+                            </div>
+                            <div class="input-field-group">
+                                <label>SL (Pips)</label>
+                                <input type="number" id="bt-sl-pips" value="10" style="width: 100%;">
+                            </div>
+                            <div class="input-field-group">
+                                <label>TP1 Outcome (Pips)</label>
+                                <input type="number" id="bt-tp1-pips" value="7" style="width: 100%;">
+                            </div>
+                            <div class="input-field-group">
+                                <label>TP2 Outcome (Pips)</label>
+                                <input type="number" id="bt-tp2-pips" value="-10" style="width: 100%;">
+                            </div>
+                            <div class="input-field-group" style="margin-top: 10px;">
+                                <button id="btn-bt-execute" class="btn btn-primary-premium" style="width: 100%;">Add Trade</button>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+            
+            <!-- New Session Modal -->
+            <div id="bt-session-modal" class="modal-overlay" style="display: none;">
+                <div class="modal" style="width: 300px;">
+                    <div class="modal-header">
+                        <span class="modal-title">Create New Session</span>
+                        <button class="btn-close-modal" id="btn-close-bt-session">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="input-field-group" style="margin-bottom: 10px;">
+                            <label>Session Name</label>
+                            <input type="text" id="bt-new-session-name" placeholder="e.g. EURUSD March 2026">
+                        </div>
+                        <div class="input-field-group">
+                            <label>Starting Balance ($)</label>
+                            <input type="number" id="bt-new-session-balance" value="10000">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button id="btn-save-bt-session" class="btn btn-primary-premium">Create</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recovery Trade Modal -->
+            <div id="bt-recovery-modal" class="modal-overlay" style="display: none;">
+                <div class="modal" style="width: 350px;">
+                    <div class="modal-header">
+                        <span class="modal-title">Recovery Trade Triggered!</span>
+                    </div>
+                    <div class="modal-body">
+                        <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 15px;">Both TP1 and TP2 were losses. Enter the recovery trade details to calculate final outcome.</p>
+                        <div class="form-grid">
+                            <div class="input-field-group col-full">
+                                <label>Recovery SL (Pips) - Distance used for lot size</label>
+                                <input type="number" id="bt-rec-sl-pips" value="20">
+                            </div>
+                            <div class="input-field-group col-full">
+                                <label>Recovery Outcome (Pips) - Final gain/loss</label>
+                                <input type="number" id="bt-rec-tp-pips" value="10">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button id="btn-submit-bt-recovery" class="btn btn-primary-premium" style="background: var(--color-sell);">Submit Recovery & Calculate</button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script src="/static/backtester.js"></script>
+    <script>
+        // Simple dark mode toggle for backtester standalone
+        document.getElementById('theme-toggle').addEventListener('click', () => {
+            const body = document.body;
+            const currentTheme = body.getAttribute('data-theme');
+            const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+            body.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+        });
+        
+        // Load saved theme
+        const savedTheme = localStorage.getItem('theme') || 'dark';
+        document.body.setAttribute('data-theme', savedTheme);
+    </script>
+</body>
+</html>

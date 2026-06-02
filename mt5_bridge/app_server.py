@@ -117,6 +117,49 @@ def calculate_volume(symbol, entry_price, sl_price, risk_usd, instance_path=None
     
     return round(volume, 2)
 
+def calculate_atr_sl(symbol, timeframe_str, instance_path=None):
+    """Calculates Wilder's Smoothing ATR(3) from MT5 data"""
+    if instance_path:
+        initialized = mt5.initialize(path=instance_path)
+    else:
+        initialized = mt5.initialize()
+        
+    if not initialized:
+        return 0.0
+        
+    # Map timeframe
+    tf_map = {
+        "1": mt5.TIMEFRAME_M1, "3": mt5.TIMEFRAME_M3, "5": mt5.TIMEFRAME_M5,
+        "15": mt5.TIMEFRAME_M15, "30": mt5.TIMEFRAME_M30, "60": mt5.TIMEFRAME_H1,
+        "120": mt5.TIMEFRAME_H2, "240": mt5.TIMEFRAME_H4, "D": mt5.TIMEFRAME_D1,
+        "1D": mt5.TIMEFRAME_D1, "W": mt5.TIMEFRAME_W1, "1W": mt5.TIMEFRAME_W1
+    }
+    mt5_tf = tf_map.get(str(timeframe_str).upper(), mt5.TIMEFRAME_H1) # fallback H1
+    
+    rates = mt5.copy_rates_from_pos(symbol, mt5_tf, 0, 100)
+    if rates is None or len(rates) < 10:
+        return 0.0
+        
+    # Calculate True Range
+    tr = []
+    for i in range(1, len(rates)):
+        high = rates[i]['high']
+        low = rates[i]['low']
+        prev_close = rates[i-1]['close']
+        tr_val = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        tr.append(tr_val)
+        
+    # Wilder's Smoothing (RMA) for period 21
+    period = 21
+    if len(tr) < period:
+        return 0.0
+        
+    rma = sum(tr[:period]) / period
+    for i in range(period, len(tr)):
+        rma = (tr[i] + (period - 1) * rma) / period
+        
+    return rma
+
 def execute_trade(symbol, action_type, sl, tp, volume, entry_price, instance_path=None, magic=999111, comment="TradingView Signal", symbol_suffix=""):
     actual_symbol = symbol + symbol_suffix
     if instance_path:
@@ -471,14 +514,65 @@ def check_trade_group(group, instance_path=None, inst_name="Default", symbol_suf
                     c.execute("UPDATE trade_groups SET status = 'ACTIVE_T2_SL_ORIGINAL' WHERE id = ?", (group_id,))
                 else:
                     logging.info(f"{prefix} SL Hit. Trade closed.")
-                    send_telegram_message(f"🛑 {prefix} {symbol} SL Hit! Trade closed.")
-                    c.execute("UPDATE trade_groups SET status = 'CLOSED_SL' WHERE id = ?", (group_id,))
+                    
+                    # Fetch extra context for recovery trade
+                    c.execute("SELECT signal_timeframe, instance_id FROM trade_groups WHERE id = ?", (group_id,))
+                    row_extra = c.fetchone()
+                    signal_tf = row_extra[0] if row_extra and row_extra[0] else 'all'
+                    inst_id = row_extra[1] if row_extra else None
+                    
+                    risk_usd = 100.0
+                    if inst_id is not None:
+                        c.execute("SELECT risk_usd FROM instances WHERE id = ?", (inst_id,))
+                        i_row = c.fetchone()
+                        if i_row: risk_usd = i_row[0]
+                        
+                    # Calculate ATR for recovery
+                    actual_symbol = symbol + symbol_suffix
+                    atr_val = calculate_atr_sl(actual_symbol, signal_tf, instance_path)
+                    
+                    if atr_val > 0:
+                        sl_dist = atr_val * 5.0
+                        rec_action = 'SELL' if action.upper() == 'BUY' else 'BUY'
+                        
+                        tick = mt5.symbol_info_tick(actual_symbol)
+                        if tick:
+                            rec_entry = tick.bid if rec_action == 'SELL' else tick.ask
+                            
+                            # Round SL distance to nearest tick size to prevent invalid prices
+                            symbol_info = mt5.symbol_info(actual_symbol)
+                            if symbol_info:
+                                tick_size = symbol_info.trade_tick_size
+                                sl_dist = round(sl_dist / tick_size) * tick_size
+                            
+                            if rec_action == 'SELL':
+                                rec_sl = rec_entry + sl_dist
+                                rec_tp = rec_entry - (sl_dist * 0.5)
+                            else:
+                                rec_sl = rec_entry - sl_dist
+                                rec_tp = rec_entry + (sl_dist * 0.5)
+                                
+                            rec_volume = calculate_volume(actual_symbol, rec_entry, rec_sl, risk_usd, instance_path, "")
+                            rec_ticket = execute_trade(actual_symbol, rec_action, rec_sl, rec_tp, rec_volume, rec_entry, instance_path, magic, "Recovery Trade", "")
+                            
+                            if rec_ticket:
+                                send_telegram_message(f"🛑 {prefix} {symbol} SL Hit! \n🔄 Automatically opened RECOVERY {rec_action} (Ticket: {rec_ticket}).")
+                                c.execute("UPDATE trade_groups SET status = 'CLOSED_SL', recovery_ticket = ?, rec_action = ?, rec_entry = ?, rec_sl = ?, rec_tp = ?, rec_volume = ? WHERE id = ?", (rec_ticket, rec_action, rec_entry, rec_sl, rec_tp, rec_volume, group_id))
+                            else:
+                                send_telegram_message(f"🛑 {prefix} {symbol} SL Hit! \n❌ Failed to open Recovery Trade (Execution error).")
+                                c.execute("UPDATE trade_groups SET status = 'CLOSED_SL' WHERE id = ?", (group_id,))
+                        else:
+                            send_telegram_message(f"🛑 {prefix} {symbol} SL Hit! \n❌ Failed to open Recovery (No tick data).")
+                            c.execute("UPDATE trade_groups SET status = 'CLOSED_SL' WHERE id = ?", (group_id,))
+                    else:
+                        send_telegram_message(f"🛑 {prefix} {symbol} SL Hit! \n❌ Failed to open Recovery (ATR calc error).")
+                        c.execute("UPDATE trade_groups SET status = 'CLOSED_SL' WHERE id = ?", (group_id,))
                 conn.commit()
                 conn.close()
                 notify_clients("tracker_update", "update")
         return
 
-    if status in ('ACTIVE_T2_SL_ORIGINAL', 'ACTIVE_T2_SL_MINUS_0_5', 'ACTIVE_T2_SL_PLUS_0_25'):
+    if status == 'ACTIVE_T2_SL_ORIGINAL':
         pos = mt5.positions_get(ticket=t2_ticket)
         if not pos or len(pos) == 0:
             deals = mt5.history_deals_get(position=t2_ticket)
@@ -493,80 +587,16 @@ def check_trade_group(group, instance_path=None, inst_name="Default", symbol_suf
                     
                     if profit > 0 and 'tp' in comment:
                         c.execute("UPDATE trade_groups SET status = 'SUCCESS_TP2_HIT' WHERE id = ?", (group_id,))
-                        send_telegram_message(f"🎯 {prefix} {symbol} TP2 (3R) Hit! Trade fully closed.")
+                        send_telegram_message(f"🎯 {prefix} {symbol} TP2 (1.75R) Hit! Trade fully closed.")
                     else:
-                        if status == 'ACTIVE_T2_SL_MINUS_0_5':
-                            new_s = 'CLOSED_T2_SL_MINUS_0_5'
-                            msg = "-0.5R"
-                        elif status == 'ACTIVE_T2_SL_PLUS_0_25':
-                            new_s = 'CLOSED_T2_SL_PLUS_0_25'
-                            msg = "+0.25R"
-                        else:
-                            new_s = 'CLOSED_T2_SL'
-                            msg = "Break Even / Original"
-                            
-                        c.execute("UPDATE trade_groups SET status = ? WHERE id = ?", (new_s, group_id))
-                        send_telegram_message(f"🛡️ {prefix} {symbol} T2 Stopped Out at {msg}.")
+                        c.execute("UPDATE trade_groups SET status = 'CLOSED_T2_SL' WHERE id = ?", (group_id,))
+                        send_telegram_message(f"🛡️ {prefix} {symbol} T2 Stopped Out at Original SL.")
                     conn.commit()
                     conn.close()
                     notify_clients("tracker_update", "update")
             return
             
-        p = pos[0]
-        current_price = p.price_current
-        
-        risk = abs(entry_price - sl)
-        is_buy = action.upper() == "BUY"
-        
-        target_1_3R = entry_price + (risk * 1.3) if is_buy else entry_price - (risk * 1.3)
-        target_2_5R = entry_price + (risk * 2.5) if is_buy else entry_price - (risk * 2.5)
-        
-        sl_minus_0_5R = entry_price - (risk * 0.5) if is_buy else entry_price + (risk * 0.5)
-        sl_plus_0_25R = entry_price + (risk * 0.25) if is_buy else entry_price - (risk * 0.25)
-        
-        new_status = status
-        new_sl = None
-        
-        if status == 'ACTIVE_T2_SL_ORIGINAL':
-            reached_1_3R = current_price >= target_1_3R if is_buy else current_price <= target_1_3R
-            if reached_1_3R:
-                new_sl = sl_minus_0_5R
-                new_status = 'ACTIVE_T2_SL_MINUS_0_5'
-                
-        if status == 'ACTIVE_T2_SL_MINUS_0_5':
-            reached_2_5R = current_price >= target_2_5R if is_buy else current_price <= target_2_5R
-            if reached_2_5R:
-                new_sl = sl_plus_0_25R
-                new_status = 'ACTIVE_T2_SL_PLUS_0_25'
-                
-        if new_sl is not None:
-            actual_symbol = symbol + symbol_suffix
-            symbol_info = mt5.symbol_info(actual_symbol)
-            if symbol_info:
-                tick_size = symbol_info.trade_tick_size
-                new_sl = round(new_sl / tick_size) * tick_size
-                
-            request = {
-                "action": mt5.TRADE_ACTION_SLTP,
-                "position": t2_ticket,
-                "symbol": actual_symbol,
-                "sl": float(new_sl),
-                "tp": float(p.tp)
-            }
-            res = mt5.order_send(request)
-            if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                logging.info(f"{prefix} T2 SL moved to {new_sl} ({new_status})")
-                sl_msg = "-0.5R" if new_status == 'ACTIVE_T2_SL_MINUS_0_5' else "+0.25R"
-                send_telegram_message(f"🛡️ {prefix} {symbol} Price advanced! Moving T2 SL to {sl_msg} ({new_sl}).")
-                
-                conn = sqlite3.connect('trades.db')
-                c = conn.cursor()
-                c.execute("UPDATE trade_groups SET status = ? WHERE id = ?", (new_status, group_id))
-                conn.commit()
-                conn.close()
-                notify_clients("tracker_update", "update")
-            else:
-                logging.error(f"{prefix} Failed to modify T2 SL: {res.comment if res else 'Unknown error'}")
+        # T2 Trailing SL logic has been fully removed. T2 will run until original SL or TP.
         return
 
 
@@ -1707,6 +1737,247 @@ def signal_alert():
         return Response(open('signal_alert.wav', 'rb').read(), mimetype='audio/wav')
     except FileNotFoundError:
         return jsonify({"error": "File not found"}), 404
+
+@flask_app.route('/api/backtest/sessions', methods=['GET', 'POST', 'DELETE'])
+def api_backtest_sessions():
+    conn = sqlite3.connect('trades.db')
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    if request.method == 'GET':
+        c.execute("SELECT * FROM backtest_sessions ORDER BY created_at DESC")
+        rows = c.fetchall()
+        sessions = [dict(row) for row in rows]
+        conn.close()
+        return jsonify(sessions)
+        
+    elif request.method == 'POST':
+        data = request.json
+        name = data.get('name', 'New Session')
+        starting_balance = float(data.get('starting_balance', 10000.0))
+        
+        c.execute("INSERT INTO backtest_sessions (name, starting_balance) VALUES (?, ?)", (name, starting_balance))
+        conn.commit()
+        session_id = c.lastrowid
+        conn.close()
+        return jsonify({"status": "success", "id": session_id})
+        
+    elif request.method == 'DELETE':
+        data = request.json
+        session_id = data.get('id')
+        if not session_id:
+            conn.close()
+            return jsonify({"error": "ID required"}), 400
+            
+        c.execute("DELETE FROM backtest_sessions WHERE id = ?", (session_id,))
+        c.execute("DELETE FROM backtest_trades WHERE session_id = ?", (session_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success"})
+
+@flask_app.route('/api/backtest/trades', methods=['GET', 'POST', 'DELETE'])
+def api_backtest_trades():
+    conn = sqlite3.connect('trades.db')
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    if request.method == 'GET':
+        session_id = request.args.get('session_id')
+        if not session_id:
+            conn.close()
+            return jsonify({"error": "session_id required"}), 400
+            
+        c.execute("SELECT starting_balance FROM backtest_sessions WHERE id = ?", (session_id,))
+        session = c.fetchone()
+        if not session:
+            conn.close()
+            return jsonify({"error": "Session not found"}), 404
+            
+        current_balance = session['starting_balance']
+        
+        c.execute("SELECT * FROM backtest_trades WHERE session_id = ? ORDER BY id ASC", (session_id,))
+        rows = c.fetchall()
+        trades = []
+        for row in rows:
+            t = dict(row)
+            
+            # Recalculate breakdown details
+            r_usd = t['risk_value'] if t['risk_type'] == '$' else (current_balance * (t['risk_value'] / 100.0))
+            r_lot = r_usd / (t['sl_pips'] * 10) if t['sl_pips'] > 0 else 0
+            step = 0.01
+            lot = round(r_lot / step) * step
+            
+            if lot >= (step * 2):
+                v1 = round((lot / 2) / step) * step
+                v2 = lot - v1
+            else:
+                v1 = lot
+                v2 = 0
+                
+            orig_pl1 = v1 * 10 * t['tp1_pips']
+            orig_pl2 = v2 * 10 * t['tp2_pips']
+            orig_comm = (v1 + v2) * 7
+            
+            rec_pl = 0
+            rec_comm = 0
+            rec_v = 0
+            
+            if t['recovery_sl_pips'] is not None and t['recovery_tp_pips'] is not None:
+                rr_lot = r_usd / (t['recovery_sl_pips'] * 10) if t['recovery_sl_pips'] > 0 else 0
+                rec_v = round(rr_lot / step) * step
+                rec_pl = rec_v * 10 * t['recovery_tp_pips']
+                rec_comm = rec_v * 7
+                
+            t['breakdown'] = {
+                'vol1': round(v1, 2),
+                'vol2': round(v2, 2),
+                'orig_pl1': orig_pl1,
+                'orig_pl2': orig_pl2,
+                'orig_comm': orig_comm,
+                'rec_vol': round(rec_v, 2),
+                'rec_pl': rec_pl,
+                'rec_comm': rec_comm
+            }
+            
+            current_balance += t['net_pl']
+            trades.append(t)
+            
+        conn.close()
+        return jsonify(trades)
+        
+    elif request.method == 'POST':
+        data = request.json
+        session_id = data.get('session_id')
+        risk_type = data.get('risk_type', '$')
+        risk_value = float(data.get('risk_value', 100))
+        sl_pips = float(data.get('sl_pips', 0))
+        tp1_pips = float(data.get('tp1_pips', 0))
+        tp2_pips = float(data.get('tp2_pips', 0))
+        recovery_sl_pips = data.get('recovery_sl_pips')
+        recovery_tp_pips = data.get('recovery_tp_pips')
+        
+        if recovery_sl_pips is not None and recovery_sl_pips != "": recovery_sl_pips = float(recovery_sl_pips)
+        else: recovery_sl_pips = None
+        if recovery_tp_pips is not None and recovery_tp_pips != "": recovery_tp_pips = float(recovery_tp_pips)
+        else: recovery_tp_pips = None
+        
+        c.execute("SELECT starting_balance FROM backtest_sessions WHERE id = ?", (session_id,))
+        session = c.fetchone()
+        if not session:
+            conn.close()
+            return jsonify({"error": "Session not found"}), 404
+            
+        c.execute("SELECT balance_after FROM backtest_trades WHERE session_id = ? ORDER BY id DESC LIMIT 1", (session_id,))
+        last_trade = c.fetchone()
+        
+        current_balance = last_trade['balance_after'] if last_trade else session['starting_balance']
+        
+        risk_usd = risk_value if risk_type == '$' else (current_balance * (risk_value / 100.0))
+        
+        raw_lot_size = risk_usd / (sl_pips * 10) if sl_pips > 0 else 0
+        step = 0.01
+        
+        lot_size = round(raw_lot_size / step) * step
+        
+        if lot_size >= (step * 2):
+            vol1 = round((lot_size / 2) / step) * step
+            vol2 = lot_size - vol1
+            vol1 = round(vol1, 2)
+            vol2 = round(vol2, 2)
+        else:
+            vol1 = lot_size
+            vol2 = 0
+        
+        gross_pl = (vol1 * 10 * tp1_pips) + (vol2 * 10 * tp2_pips)
+        commission = (vol1 + vol2) * 7
+        
+        if recovery_sl_pips is not None and recovery_tp_pips is not None:
+            raw_rec_lot = risk_usd / (recovery_sl_pips * 10) if recovery_sl_pips > 0 else 0
+            rec_lot_size = round(raw_rec_lot / step) * step
+            
+            rec_gross = rec_lot_size * 10 * recovery_tp_pips
+            rec_commission = rec_lot_size * 7
+            
+            gross_pl += rec_gross
+            commission += rec_commission
+            
+        net_pl = gross_pl - commission
+        balance_after = current_balance + net_pl
+        
+        c.execute('''
+            INSERT INTO backtest_trades (
+                session_id, risk_type, risk_value, sl_pips, tp1_pips, tp2_pips, 
+                recovery_sl_pips, recovery_tp_pips, net_pl, balance_after
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (session_id, risk_type, risk_value, sl_pips, tp1_pips, tp2_pips, recovery_sl_pips, recovery_tp_pips, net_pl, balance_after))
+        
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success", "net_pl": net_pl, "balance_after": balance_after})
+
+    elif request.method == 'DELETE':
+        data = request.json
+        trade_id = data.get('trade_id')
+        clear_session_id = data.get('clear_session_id')
+        
+        if clear_session_id:
+            c.execute("DELETE FROM backtest_trades WHERE session_id = ?", (clear_session_id,))
+            conn.commit()
+            conn.close()
+            return jsonify({"status": "success"})
+            
+        if trade_id:
+            c.execute("SELECT session_id FROM backtest_trades WHERE id = ?", (trade_id,))
+            row = c.fetchone()
+            if not row:
+                conn.close()
+                return jsonify({"error": "Trade not found"}), 404
+                
+            session_id = row['session_id']
+            c.execute("DELETE FROM backtest_trades WHERE id = ?", (trade_id,))
+            
+            # Recalculate remaining trades
+            c.execute("SELECT starting_balance FROM backtest_sessions WHERE id = ?", (session_id,))
+            session = c.fetchone()
+            if session:
+                current_balance = session['starting_balance']
+                c.execute("SELECT * FROM backtest_trades WHERE session_id = ? ORDER BY id ASC", (session_id,))
+                trades = c.fetchall()
+                
+                for t in trades:
+                    r_usd = t['risk_value'] if t['risk_type'] == '$' else (current_balance * (t['risk_value'] / 100.0))
+                    
+                    r_lot = r_usd / (t['sl_pips'] * 10) if t['sl_pips'] > 0 else 0
+                    step = 0.01
+                    lot = round(r_lot / step) * step
+                    
+                    if lot >= (step * 2):
+                        v1 = round((lot / 2) / step) * step
+                        v2 = lot - v1
+                    else:
+                        v1 = lot
+                        v2 = 0
+                        
+                    g_pl = (v1 * 10 * t['tp1_pips']) + (v2 * 10 * t['tp2_pips'])
+                    comm = (v1 + v2) * 7
+                    
+                    if t['recovery_sl_pips'] is not None and t['recovery_tp_pips'] is not None:
+                        rr_lot = r_usd / (t['recovery_sl_pips'] * 10) if t['recovery_sl_pips'] > 0 else 0
+                        rl = round(rr_lot / step) * step
+                        g_pl += (rl * 10 * t['recovery_tp_pips'])
+                        comm += (rl * 7)
+                        
+                    n_pl = g_pl - comm
+                    current_balance += n_pl
+                    
+                    c.execute("UPDATE backtest_trades SET net_pl = ?, balance_after = ? WHERE id = ?", (n_pl, current_balance, t['id']))
+                    
+            conn.commit()
+            conn.close()
+            return jsonify({"status": "success"})
+            
+        conn.close()
+        return jsonify({"error": "No ID provided"}), 400
 
 def main():
     logging.info("Starting Premium MT5 Bridge Server...")
