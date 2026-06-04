@@ -1825,20 +1825,28 @@ function renderHealthCards(instances) {
         const eq = inst.equity.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
         const ml = inst.margin_level > 0 ? inst.margin_level.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '%' : 'N/A';
         const floatingPnl = inst.equity - inst.balance;
-        const ddUsdVal = floatingPnl < 0 ? Math.abs(floatingPnl) : 0;
-        let ddPctValStr = '0.00';
-        if (inst.balance > 0 && ddUsdVal > 0) {
-            const pct = (ddUsdVal / inst.balance) * 100;
-            ddPctValStr = pct < 0.01 ? '<0.01' : pct.toFixed(2);
+        const pnlAbs = Math.abs(floatingPnl);
+        let pnlPctValStr = '0.00';
+        if (inst.balance > 0 && pnlAbs > 0) {
+            const pct = (pnlAbs / inst.balance) * 100;
+            pnlPctValStr = pct < 0.01 ? '<0.01' : pct.toFixed(2);
         }
-        const ddStr = `$${ddUsdVal.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${ddPctValStr}%)`;
-        const ddVisibility = ddUsdVal > 0 ? 'visible' : 'hidden';
+        const sign = floatingPnl > 0 ? '+' : (floatingPnl < 0 ? '-' : '');
+        const pnlStr = `${sign}$${pnlAbs.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${pnlPctValStr}%)`;
+        const pnlColor = floatingPnl > 0 ? 'var(--color-buy)' : (floatingPnl < 0 ? 'var(--color-sell)' : 'var(--text-primary)');
+
+        let cardClass = "setting-card";
+        if (floatingPnl > 0) {
+            cardClass += " in-profit";
+        } else if (floatingPnl < 0) {
+            cardClass += " in-drawdown";
+        }
 
         let card = document.getElementById(`health-card-${inst.id}`);
         if (!card) {
             card = document.createElement('div');
             card.id = `health-card-${inst.id}`;
-            card.className = "setting-card" + (ddUsdVal > 0 ? " in-drawdown" : "");
+            card.className = cardClass;
             card.style = "padding: 0; margin-bottom: 0;";
             
             card.innerHTML = `
@@ -1863,18 +1871,22 @@ function renderHealthCards(instances) {
                         <strong id="card-trades-${inst.id}" style="font-size: 10.5px;">${inst.positions.length}</strong>
                     </div>
                     
-                    <div id="card-dd-row-${inst.id}" style="display: flex; visibility: ${ddVisibility}; justify-content: space-between; align-items: center;">
-                        <span style="color: var(--text-secondary); font-size: 10px;">Drawdown</span>
-                        <strong id="card-dd-${inst.id}" style="font-size: 10.5px; color: var(--color-sell); white-space: nowrap;">${ddStr}</strong>
+                    <div id="card-dd-row-${inst.id}" style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="color: var(--text-secondary); font-size: 10px;">P&L</span>
+                        <strong id="card-dd-${inst.id}" style="font-size: 10.5px; color: ${pnlColor}; white-space: nowrap;">${pnlStr}</strong>
                     </div>
                 </div>
             `;
             grid.appendChild(card);
         } else {
-            if (ddUsdVal > 0) {
-                card.classList.add('in-drawdown');
-            } else {
+            if (floatingPnl > 0) {
+                card.classList.add('in-profit');
                 card.classList.remove('in-drawdown');
+            } else if (floatingPnl < 0) {
+                card.classList.add('in-drawdown');
+                card.classList.remove('in-profit');
+            } else {
+                card.classList.remove('in-drawdown', 'in-profit');
             }
 
             const balEl = document.getElementById(`card-bal-${inst.id}`);
@@ -1886,16 +1898,10 @@ function renderHealthCards(instances) {
             const tradesEl = document.getElementById(`card-trades-${inst.id}`);
             if (tradesEl) tradesEl.innerText = inst.positions.length;
             
-            const ddRow = document.getElementById(`card-dd-row-${inst.id}`);
             const ddEl = document.getElementById(`card-dd-${inst.id}`);
-            
-            if (ddRow && ddEl) {
-                if (ddUsdVal > 0) {
-                    ddRow.style.visibility = 'visible';
-                    ddEl.innerText = ddStr;
-                } else {
-                    ddRow.style.visibility = 'hidden';
-                }
+            if (ddEl) {
+                ddEl.innerText = pnlStr;
+                ddEl.style.color = pnlColor;
             }
         }
     });
