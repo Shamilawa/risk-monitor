@@ -23,11 +23,7 @@
                     <span id="mt5-status-text">MT5 Offline</span>
                 </div>
                 
-                <div class="webhook-group">
-                    <label for="webhook-url">Webhook:</label>
-                    <input type="text" id="webhook-url" value="Starting Ngrok..." readonly>
-                    <button id="copy-btn" class="btn-toolbar">Copy</button>
-                </div>
+
                 <a href="/backtester" class="btn-toolbar" style="text-decoration: none; color: inherit; padding: 2px 8px; margin-left: 10px; background: rgba(255,255,255,0.1);">Open Backtester</a>
             </div>
         </header>
@@ -39,34 +35,40 @@
             <section class="grid-section">
                 <div class="section-toolbar" style="display: flex; justify-content: space-between; align-items: center; padding-right: 4px;">
                     <div style="display: flex;">
-                        <span class="tab active" data-tab="active">Market Orders</span>
+                        <span class="tab active" data-tab="overview">Instances Overview</span>
                         <span class="tab" data-tab="log">Trading Log</span>
                         <span class="tab" data-tab="story">Story Notes</span>
                     </div>
-                    <div class="filter-group" id="tracker-filters" style="display: flex; gap: 2px; align-items: center;">
-                        <span style="font-size: 10px; color: var(--text-muted); margin-right: 4px;">Filter:</span>
-                        <button class="btn-filter active" data-filter="all">All</button>
-                        <button class="btn-filter" data-filter="active">Active</button>
-                        <button class="btn-filter" data-filter="pending">Pending</button>
+                </div>
+                <div id="overview-container" style="display: flex; flex-direction: column; padding: 10px; height: 100%; overflow-y: auto;">
+                    <div class="health-cards-grid" id="health-cards-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 15px;">
+                        <!-- Cards injected here -->
+                    </div>
+                    
+                    <div class="active-positions-section" style="margin-top: 20px;">
+                        <h3 style="font-size: 14px; color: var(--text-primary); margin-bottom: 8px;">Active Positions</h3>
+                        <div class="table-container">
+                            <table class="data-grid" id="active-positions-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 15%;">Symbol / Ticket</th>
+                                        <th style="width: 10%;">Type</th>
+                                        <th style="width: 10%;">Volume</th>
+                                        <th style="width: 15%;">Open Price</th>
+                                        <th style="width: 15%;">Current Price</th>
+                                        <th style="width: 10%;">Dist. SL (pts)</th>
+                                        <th style="width: 10%;">Risk ($)</th>
+                                        <th style="width: 15%;">Floating P&L</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="active-positions-tbody">
+                                    <!-- Grouped Rows injected here -->
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
                 
-                <div class="table-container">
-                    <table id="tracker-table" class="data-grid">
-                        <thead>
-                            <tr>
-                                <th style="width: 20%;">Symbol / Group</th>
-                                <th style="width: 15%;">Instance</th>
-                                <th style="width: 15%;">Ticket</th>
-                                <th style="width: 15%;">Trade Type</th>
-                                <th style="width: 35%;">Status</th>
-                            </tr>
-                        </thead>
-                        <tbody id="tracker-tbody">
-                            <!-- Populated by JS -->
-                        </tbody>
-                    </table>
-                </div>
                 {% include 'trading_log.html' %}
                 {% include 'story_notes.html' %}
             </section>
@@ -89,37 +91,29 @@
         </div>
     </div>
 
-    <!-- Trade Confirmation Modal (Enterprise Style) -->
+
+
+
+    <!-- Trade/Story Modal -->
     <div id="trade-modal" class="modal-overlay">
         <div class="modal">
-            <div class="modal-header">
-                <div style="display: flex; align-items: center;">
-                    <span class="modal-title">Trade Confirmation Request</span>
-                    <span id="modal-signal-count" class="badge-dense bdg-pending" style="margin-left: 10px; display: none;"></span>
+            <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <span>Trade Details</span>
+                <button id="modal-close-btn" class="btn-close-modal">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 15px;">
+                <h4 id="modal-action-symbol" style="margin-bottom: 15px;"></h4>
+                <div class="input-field-group col-full">
+                    <label>Story Notes</label>
+                    <textarea id="modal-notes-input" rows="4" placeholder="Enter notes for this trade..." style="width: 100%; resize: vertical; padding: 8px; background: var(--bg-input); border: 1px solid var(--border-dark); color: var(--text-main); border-radius: 4px;"></textarea>
                 </div>
-            </div>
-            <div class="modal-body">
-                <div class="action-banner" id="modal-action-symbol">BUY EURUSD</div>
-                
-                <table class="details-table" id="modal-info-grid">
-                    <!-- Info rows injected here -->
-                </table>
-                
-                <div class="split-info" id="modal-split-info">
-                    <!-- Split message injected here -->
-                </div>
-            </div>
-            <div class="modal-footer" id="modal-footer-manual">
-                <button id="btn-abort" class="btn btn-action abort">Abort</button>
-                <button id="btn-execute" class="btn btn-action execute">Execute</button>
-            </div>
-            <div class="modal-footer" id="modal-footer-auto" style="display: none;">
-                <button id="btn-dismiss" class="btn btn-action execute" style="background: var(--color-active); border-color: #0d47a1;">Dismiss</button>
+                <button id="modal-save-btn" class="btn btn-primary-premium" style="width: 100%; margin-top: 10px;">Save Notes</button>
             </div>
         </div>
     </div>
-
+    
     <!-- Settings Modal -->
+
     <div id="settings-modal" class="modal-overlay">
         <div class="modal">
             <div class="modal-header">
@@ -245,6 +239,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="/static/main.js"></script>
+    <script src="/static/main.js?v=3.2"></script>
 </body>
 </html>
