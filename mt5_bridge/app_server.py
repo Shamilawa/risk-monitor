@@ -13,6 +13,7 @@ import sqlite3
 import random
 import time
 import webbrowser
+import concurrent.futures
 from datetime import datetime
 
 load_dotenv()
@@ -55,6 +56,7 @@ logger.addHandler(sse_handler)
 # --- FLASK APP ---
 # Specify static and template folders to be in the current directory
 flask_app = Flask(__name__, static_folder='static', template_folder='templates')
+flask_app.config['TEMPLATES_AUTO_RELOAD'] = True
 werk_log = logging.getLogger('werkzeug')
 werk_log.setLevel(logging.ERROR)
 
@@ -246,13 +248,167 @@ def get_historical_equity_curve(current_balance, current_equity):
             
     return {"labels": labels, "data": data}
 
+mt5_lock = threading.Lock()
+
+def execute_trade(symbol, action_type, sl, tp, volume, entry_price, instance_path=None, magic=999111, 
+                  comment="TradingView Signal", symbol_suffix=""):
+    actual_symbol = symbol + symbol_suffix
+    with mt5_lock:
+        if instance_path:
+            initialized = mt5.initialize(path=instance_path)
+        else:
+            initialized = mt5.initialize()
+            
+        if not initialized:
+            logging.error(f"MT5 initialization failed: {mt5.last_error()}")
+            return None
+            
+        tick = mt5.symbol_info_tick(actual_symbol)
+        if tick is None:
+            logging.error(f"Failed to get tick for {actual_symbol}")
+            return None
+    
+        ask = tick.ask
+        bid = tick.bid
+        entry_price = float(entry_price)
+    
+        # Determine order type and price
+        if action_type.lower() == 'buy':
+            if entry_price > 0 and entry_price != ask:
+                if ask > entry_price:
+                    order_type = mt5.ORDER_TYPE_BUY_LIMIT
+                else:
+                    order_type = mt5.ORDER_TYPE_BUY_STOP
+                price = entry_price
+            else:
+                order_type = mt5.ORDER_TYPE_BUY
+                price = ask
+                
+        elif action_type.lower() == 'sell':
+            if entry_price > 0 and entry_price != bid:
+                if bid > entry_price:
+                    order_type = mt5.ORDER_TYPE_SELL_STOP
+                else:
+                    order_type = mt5.ORDER_TYPE_SELL_LIMIT
+                price = entry_price
+            else:
+                order_type = mt5.ORDER_TYPE_SELL
+                price = bid
+        else:
+            logging.error(f"Unknown action type: {action_type}")
+            return None
+            
+        is_pending = order_type in [mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_SELL_LIMIT, mt5.ORDER_TYPE_SELL_STOP]
+        action_req = mt5.TRADE_ACTION_PENDING if is_pending else mt5.TRADE_ACTION_DEAL
+    
+        request = {
+            "action": action_req,
+            "symbol": actual_symbol,
+            "volume": float(volume),
+            "type": order_type,
+            "price": price,
+            "sl": float(sl),
+            "tp": float(tp),
+            "deviation": 20,
+            "magic": magic,
+            "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+        
+        if not is_pending:
+            request["type_filling"] = mt5.ORDER_FILLING_IOC
+            
+        result = mt5.order_send(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            logging.error(f"Order failed, retcode={result.retcode}")
+            logging.error(f"Error Description: {result.comment}")
+            return None
+            
+        logging.info(f"Trade Executed Successfully! Ticket: {result.order}")
+        return result.order
+
+def fetch_instance_data(inst):
+    inst_id, inst_name, inst_path, symbol_suffix, group_name = inst
+    try:
+        with mt5_lock:
+            if not mt5.initialize(path=inst_path):
+                return None
+                
+            acc = mt5.account_info()
+            positions = mt5.positions_get()
+            
+            inst_risk = {
+                "id": inst_id,
+                "name": inst_name,
+                "group_name": group_name,
+                "balance": 0,
+                "equity": 0,
+                "margin_level": 0,
+                "total_risk_usd": 0,
+                "drawdown_pct": 0,
+                "positions": [],
+                "historical_equity": {"labels": [], "data": []}
+            }
+            
+            if acc:
+                inst_risk["balance"] = acc.balance
+                inst_risk["equity"] = acc.equity
+                inst_risk["margin_level"] = acc.margin_level
+                if acc.balance > 0:
+                    inst_risk["drawdown_pct"] = max(0, ((acc.balance - acc.equity) / acc.balance) * 100)
+                inst_risk["historical_equity"] = get_historical_equity_curve(acc.balance, acc.equity)
+                    
+            if positions:
+                for p in positions:
+                    risk_usd = 0
+                    if p.sl != 0:
+                        calc = mt5.order_calc_profit(mt5.ORDER_TYPE_BUY if p.type == 0 else mt5.ORDER_TYPE_SELL, p.symbol, p.volume, p.price_open, p.sl)
+                        if calc is not None:
+                            risk_usd = abs(calc)
+                        else:
+                            sym_info = mt5.symbol_info(p.symbol)
+                            if sym_info and sym_info.trade_tick_size and sym_info.trade_tick_value:
+                                ticks_lost = abs(p.price_open - p.sl) / sym_info.trade_tick_size
+                                risk_usd = ticks_lost * sym_info.trade_tick_value * p.volume
+                    inst_risk["total_risk_usd"] += risk_usd
+                    
+                    tick = mt5.symbol_info_tick(p.symbol)
+                    current_price = (tick.bid if p.type == 0 else tick.ask) if tick else p.price_current
+                    
+                    sym_info = mt5.symbol_info(p.symbol)
+                    point = sym_info.point if sym_info else 0.00001
+                    dist_sl = abs(current_price - p.sl) / point if p.sl != 0 and point != 0 else -1
+                    
+                    inst_risk["positions"].append({
+                        "ticket": p.ticket,
+                        "symbol": p.symbol,
+                        "type": "BUY" if p.type == 0 else "SELL",
+                        "volume": p.volume,
+                        "price_open": p.price_open,
+                        "price_current": current_price,
+                        "sl": p.sl,
+                        "tp": p.tp,
+                        "profit": p.profit,
+                        "risk_usd": risk_usd,
+                        "dist_sl": dist_sl
+                    })
+            return inst_risk
+    except Exception as e:
+        logging.error(f"Error fetching data for instance {inst_name}: {e}")
+        return None
+
 def poller_thread():
     global global_mt5_status, global_was_time_disabled
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+    
     while True:
         try:
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
-            c.execute("SELECT id, name, path, symbol_suffix FROM instances")
+            try:
+                c.execute("SELECT id, name, path, symbol_suffix, group_name FROM instances")
+            except sqlite3.OperationalError:
+                c.execute("SELECT id, name, path, symbol_suffix, 'Ungrouped' as group_name FROM instances")
             instances = c.fetchall()
             
             risk_payload = []
@@ -264,66 +420,13 @@ def poller_thread():
                     status_data = json.dumps({"online": False, "text": "MT5 Offline"})
             else:
                 total_count = len(instances)
-                online_count = 0
-                for inst in instances:
-                    inst_id, inst_name, inst_path, symbol_suffix = inst
-                    if mt5.initialize(path=inst_path):
-                        online_count += 1
-                        
-                        acc = mt5.account_info()
-                        positions = mt5.positions_get()
-                        
-                        inst_risk = {
-                            "id": inst_id,
-                            "name": inst_name,
-                            "balance": 0,
-                            "equity": 0,
-                            "margin_level": 0,
-                            "total_risk_usd": 0,
-                            "drawdown_pct": 0,
-                            "positions": [],
-                            "historical_equity": {"labels": [], "data": []}
-                        }
-                        
-                        if acc:
-                            inst_risk["balance"] = acc.balance
-                            inst_risk["equity"] = acc.equity
-                            inst_risk["margin_level"] = acc.margin_level
-                            if acc.balance > 0:
-                                inst_risk["drawdown_pct"] = max(0, ((acc.balance - acc.equity) / acc.balance) * 100)
-                            inst_risk["historical_equity"] = get_historical_equity_curve(acc.balance, acc.equity)
-                                
-                        if positions:
-                            for p in positions:
-                                risk_usd = 0
-                                if p.sl != 0:
-                                    calc = mt5.order_calc_profit(mt5.ORDER_TYPE_BUY if p.type == 0 else mt5.ORDER_TYPE_SELL, p.symbol, p.volume, p.price_open, p.sl)
-                                    if calc is not None:
-                                        risk_usd = abs(calc)
-                                inst_risk["total_risk_usd"] += risk_usd
-                                
-                                tick = mt5.symbol_info_tick(p.symbol)
-                                current_price = tick.bid if p.type == 0 else (tick.ask if tick else p.price_current)
-                                
-                                sym_info = mt5.symbol_info(p.symbol)
-                                point = sym_info.point if sym_info else 0.00001
-                                dist_sl = abs(current_price - p.sl) / point if p.sl != 0 and point != 0 else -1
-                                
-                                inst_risk["positions"].append({
-                                    "ticket": p.ticket,
-                                    "symbol": p.symbol,
-                                    "type": "BUY" if p.type == 0 else "SELL",
-                                    "volume": p.volume,
-                                    "price_open": p.price_open,
-                                    "price_current": current_price,
-                                    "sl": p.sl,
-                                    "tp": p.tp,
-                                    "profit": p.profit,
-                                    "risk_usd": risk_usd,
-                                    "dist_sl": dist_sl
-                                })
-                                
-                        risk_payload.append(inst_risk)
+                
+                # Fetch all instances concurrently
+                futures = [executor.submit(fetch_instance_data, inst) for inst in instances]
+                results = [f.result() for f in concurrent.futures.as_completed(futures)]
+                
+                risk_payload = [r for r in results if r is not None]
+                online_count = len(risk_payload)
                 
                 is_any_online = online_count > 0
                 status_text = f"MT5: {online_count}/{total_count} Online" if total_count > 0 else "No Instances"
@@ -335,7 +438,6 @@ def poller_thread():
                 
             if instances:
                 notify_clients("risk_data", json.dumps(risk_payload))
-            
             
             c.execute("SELECT disable_time_start, disable_time_end FROM global_settings WHERE id = 1")
             global_row = c.fetchone()
@@ -358,14 +460,15 @@ def poller_thread():
             conn.close()
         except Exception as e:
             logging.error(f"Poller thread error: {e}")
-        time.sleep(3)
+        time.sleep(0.5)
 
 def reconcile_on_boot():
     init_db()
     logging.info("Running initialization flow on boot...")
-    if not mt5.initialize():
-        logging.error("MT5 init failed during boot.")
-        return
+    with mt5_lock:
+        if not mt5.initialize():
+            logging.error("MT5 init failed during boot.")
+            return
 
 # --- FLASK ENDPOINTS ---
 @flask_app.route('/')
@@ -431,9 +534,12 @@ def api_instances():
     
     if request.method == 'GET':
         try:
-            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time FROM instances ORDER BY id ASC")
+            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name FROM instances ORDER BY id ASC")
         except sqlite3.OperationalError:
-            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe FROM instances ORDER BY id ASC")
+            try:
+                c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time FROM instances ORDER BY id ASC")
+            except sqlite3.OperationalError:
+                c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe FROM instances ORDER BY id ASC")
             
         rows = c.fetchall()
         instances = []
@@ -450,11 +556,14 @@ def api_instances():
                 unrealized_profit = get_unrealized_profit(r[2])
                 current_profit = closed_profit + unrealized_profit
                 
+            group_name = r[9] if len(r) > 9 else 'Ungrouped'
+            
             instances.append({
                 "id": inst_id, "name": r[1], "path": r[2], "risk_usd": r[3], 
                 "symbol_mapping": r[4], "auto_trade": r[5], "accepted_timeframe": r[6] or 'all',
                 "profit_limit": profit_limit or 0, "profit_limit_start_time": profit_limit_start_time or 0,
-                "current_profit": current_profit
+                "current_profit": current_profit,
+                "group_name": group_name
             })
         conn.close()
         return jsonify(instances)
@@ -468,6 +577,7 @@ def api_instances():
         auto_trade = int(data.get('auto_trade', 0))
         accepted_timeframe = data.get('accepted_timeframe', 'all')
         profit_limit = float(data.get('profit_limit', 0))
+        group_name = data.get('group_name', 'Ungrouped')
         import time
         profit_limit_start_time = int(time.time())
         
@@ -476,9 +586,12 @@ def api_instances():
             return jsonify({"error": "Name and path required"}), 400
             
         try:
-            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time))
+            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name))
         except sqlite3.OperationalError:
-            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe) VALUES (?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe))
+            try:
+                c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time))
+            except sqlite3.OperationalError:
+                c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe) VALUES (?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe))
             
         conn.commit()
         new_id = c.lastrowid
@@ -495,15 +608,19 @@ def api_instances():
         auto_trade = int(data.get('auto_trade', 0))
         accepted_timeframe = data.get('accepted_timeframe', 'all')
         profit_limit = float(data.get('profit_limit', 0))
+        group_name = data.get('group_name', 'Ungrouped')
         
         if not instance_id or not name or not path:
             conn.close()
             return jsonify({"error": "ID, name and path required"}), 400
             
         try:
-            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, instance_id))
+            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=?, group_name=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, group_name, instance_id))
         except sqlite3.OperationalError:
-            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, instance_id))
+            try:
+                c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, instance_id))
+            except sqlite3.OperationalError:
+                c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, instance_id))
             
         conn.commit()
         conn.close()
@@ -803,9 +920,94 @@ def api_place_recovery_trade():
     notify_clients("tracker_update", "update")
     return jsonify(res)
 
-def api_abort_trade():
-    logging.info("User clicked ABORT.")
-    return jsonify({"status": "aborted"})
+def close_instance_positions(inst):
+    inst_id, inst_name, inst_path = inst
+    closed_count = 0
+    try:
+        with mt5_lock:
+            if not mt5.initialize(path=inst_path):
+                return {"name": inst_name, "closed": 0, "error": "MT5 not connected"}
+                
+            positions = mt5.positions_get()
+            if positions:
+                for p in positions:
+                    tick = mt5.symbol_info_tick(p.symbol)
+                    order_type = mt5.ORDER_TYPE_SELL if p.type == 0 else mt5.ORDER_TYPE_BUY
+                    price = tick.bid if order_type == mt5.ORDER_TYPE_SELL else tick.ask
+                    
+                    req = {
+                        "action": mt5.TRADE_ACTION_DEAL,
+                        "symbol": p.symbol,
+                        "volume": p.volume,
+                        "type": order_type,
+                        "position": p.ticket,
+                        "price": price,
+                        "deviation": 50,
+                        "magic": p.magic,
+                        "comment": "Panic Close All",
+                        "type_time": mt5.ORDER_TIME_GTC,
+                        "type_filling": mt5.ORDER_FILLING_IOC,
+                    }
+                    
+                    # Check MT5 specific filling modes for compatibility if needed, but IOC is safest fallback.
+                    res = mt5.order_send(req)
+                    if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                        closed_count += 1
+                    else:
+                        # Retry with FOK
+                        req["type_filling"] = mt5.ORDER_FILLING_FOK
+                        res = mt5.order_send(req)
+                        if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                            closed_count += 1
+                            
+            return {"name": inst_name, "closed": closed_count, "error": None}
+    except Exception as e:
+        return {"name": inst_name, "closed": closed_count, "error": str(e)}
+
+@flask_app.route('/api/close_all', methods=['POST'])
+def api_close_all():
+    logging.info("User clicked GLOBAL CLOSE ALL.")
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    c.execute("SELECT id, name, path FROM instances")
+    instances = c.fetchall()
+    conn.close()
+    
+    if not instances:
+        return jsonify({"status": "error", "message": "No instances to close"})
+        
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+    futures = [executor.submit(close_instance_positions, inst) for inst in instances]
+    
+    results = [f.result() for f in concurrent.futures.as_completed(futures)]
+    total_closed = sum(r['closed'] for r in results)
+    
+    return jsonify({"status": "success", "message": f"Closed {total_closed} positions across {len(instances)} instances."})
+
+@flask_app.route('/api/close_group', methods=['POST'])
+def api_close_group():
+    data = request.json
+    group_name = data.get('group_name')
+    if not group_name:
+        return jsonify({"error": "Group name required"}), 400
+        
+    logging.info(f"User clicked CLOSE GROUP: {group_name}.")
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    c.execute("SELECT id, name, path FROM instances WHERE group_name = ?", (group_name,))
+    instances = c.fetchall()
+    conn.close()
+    
+    if not instances:
+        return jsonify({"status": "error", "message": "No instances found in this group"})
+        
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+    futures = [executor.submit(close_instance_positions, inst) for inst in instances]
+    
+    results = [f.result() for f in concurrent.futures.as_completed(futures)]
+    total_closed = sum(r['closed'] for r in results)
+    
+    return jsonify({"status": "success", "message": f"Closed {total_closed} positions in group {group_name}."})
 
 @flask_app.route('/api/sync_log', methods=['POST'])
 def api_sync_log():
@@ -822,84 +1024,85 @@ def api_sync_log():
     for inst in instances:
         inst_id, inst_name, inst_path = inst
         
-        if inst_path:
-            initialized = mt5.initialize(path=inst_path)
-        else:
-            initialized = mt5.initialize()
-            
-        if not initialized:
-            logging.error(f"Failed to initialize MT5 for instance {inst_name}")
-            continue
-            
-        import datetime
-        from_date = datetime.datetime(2000, 1, 1)
-        to_date = datetime.datetime.now() + datetime.timedelta(days=1)
-        
-        deals = mt5.history_deals_get(from_date, to_date)
-        if deals is None:
-            logging.error(f"Failed to get history deals for {inst_name}: {mt5.last_error()}")
-            continue
-            
-        logging.info(f"Fetched {len(deals)} deals from {inst_name}")
-        
-        # Calculate MT5 to Local Time Offset
-        time_offset = 0
-        if len(deals) > 0:
-            import time
-            for d in reversed(deals):
-                if d.symbol:
-                    mt5.symbol_select(d.symbol, True)
-                    tick = mt5.symbol_info_tick(d.symbol)
-                    if tick and tick.time > 0:
-                        time_offset = int(time.time()) - tick.time
-                        logging.info(f"Calculated time offset for {inst_name}: {time_offset} seconds (using {d.symbol})")
-                        break
-        
-        # Clear existing logs for this instance to ensure a clean sync
-        c.execute("DELETE FROM trading_log WHERE instance_id = ?", (inst_id,))
-        
-        for deal in deals:
-            # Filter for deals that are trades (buy/sell)
-            if deal.type not in (0, 1):
-                continue
-                
-            # Filter for deals that are exits (OUT/INOUT/OUT_BY)
-            # entry: 0=IN, 1=OUT, 2=INOUT, 3=OUT_BY
-            # We only want the closing deals because they carry the profit and represent a completed trade.
-            if deal.entry == 0:
-                continue
-                
-            # Fetch ALL deals for this position to sum up profit/commission/swap
-            # This handles cases where commission is charged on entry and exit separately.
-            pos_deals = mt5.history_deals_get(position=deal.position_id)
-            if pos_deals:
-                total_profit = sum(d.profit for d in pos_deals)
-                total_comm = sum(d.commission for d in pos_deals)
-                total_swap = sum(d.swap for d in pos_deals)
-                net_profit = total_profit + total_comm + total_swap
-                logging.info(f"Position {deal.position_id}: Profit={total_profit}, Comm={total_comm}, Swap={total_swap}, Net={net_profit}")
-                local_start_time = pos_deals[0].time + time_offset
+        with mt5_lock:
+            if inst_path:
+                initialized = mt5.initialize(path=inst_path)
             else:
-                total_profit = deal.profit
-                total_comm = deal.commission
-                total_swap = deal.swap
-                net_profit = deal.profit + deal.commission + deal.swap
-                logging.info(f"Deal {deal.ticket} (no pos deals): Profit={deal.profit}, Comm={deal.commission}, Swap={deal.swap}, Net={net_profit}")
-                local_start_time = deal.time + time_offset
+                initialized = mt5.initialize()
+                
+            if not initialized:
+                logging.error(f"Failed to initialize MT5 for instance {inst_name}")
+                continue
+                
+            import datetime
+            from_date = datetime.datetime(2000, 1, 1)
+            to_date = datetime.datetime.now() + datetime.timedelta(days=1)
             
-            local_close_time = deal.time + time_offset
+            deals = mt5.history_deals_get(from_date, to_date)
+            if deals is None:
+                logging.error(f"Failed to get history deals for {inst_name}: {mt5.last_error()}")
+                continue
+                
+            logging.info(f"Fetched {len(deals)} deals from {inst_name}")
             
-            try:
-                c.execute('''
-                    INSERT INTO trading_log (
-                        instance_id, ticket, symbol, type, volume, profit, time, magic, comment, commission, swap, raw_profit, local_start_time, local_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    inst_id, deal.ticket, deal.symbol, deal.type, deal.volume, net_profit, deal.time, deal.magic, deal.comment, total_comm, total_swap, total_profit, local_start_time, local_close_time
-                ))
-                total_synced += 1
-            except Exception as e:
-                logging.error(f"Error inserting deal {deal.ticket}: {e}")
+            # Calculate MT5 to Local Time Offset
+            time_offset = 0
+            if len(deals) > 0:
+                import time
+                for d in reversed(deals):
+                    if d.symbol:
+                        mt5.symbol_select(d.symbol, True)
+                        tick = mt5.symbol_info_tick(d.symbol)
+                        if tick and tick.time > 0:
+                            time_offset = int(time.time()) - tick.time
+                            logging.info(f"Calculated time offset for {inst_name}: {time_offset} seconds (using {d.symbol})")
+                            break
+            
+            # Clear existing logs for this instance to ensure a clean sync
+            c.execute("DELETE FROM trading_log WHERE instance_id = ?", (inst_id,))
+            
+            for deal in deals:
+                # Filter for deals that are trades (buy/sell)
+                if deal.type not in (0, 1):
+                    continue
+                    
+                # Filter for deals that are exits (OUT/INOUT/OUT_BY)
+                # entry: 0=IN, 1=OUT, 2=INOUT, 3=OUT_BY
+                # We only want the closing deals because they carry the profit and represent a completed trade.
+                if deal.entry == 0:
+                    continue
+                    
+                # Fetch ALL deals for this position to sum up profit/commission/swap
+                # This handles cases where commission is charged on entry and exit separately.
+                pos_deals = mt5.history_deals_get(position=deal.position_id)
+                if pos_deals:
+                    total_profit = sum(d.profit for d in pos_deals)
+                    total_comm = sum(d.commission for d in pos_deals)
+                    total_swap = sum(d.swap for d in pos_deals)
+                    net_profit = total_profit + total_comm + total_swap
+                    logging.info(f"Position {deal.position_id}: Profit={total_profit}, Comm={total_comm}, Swap={total_swap}, Net={net_profit}")
+                    local_start_time = pos_deals[0].time + time_offset
+                else:
+                    total_profit = deal.profit
+                    total_comm = deal.commission
+                    total_swap = deal.swap
+                    net_profit = deal.profit + deal.commission + deal.swap
+                    logging.info(f"Deal {deal.ticket} (no pos deals): Profit={deal.profit}, Comm={deal.commission}, Swap={deal.swap}, Net={net_profit}")
+                    local_start_time = deal.time + time_offset
+                
+                local_close_time = deal.time + time_offset
+                
+                try:
+                    c.execute('''
+                        INSERT INTO trading_log (
+                            instance_id, ticket, symbol, type, volume, profit, time, magic, comment, commission, swap, raw_profit, local_start_time, local_time
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        inst_id, deal.ticket, deal.symbol, deal.type, deal.volume, net_profit, deal.time, deal.magic, deal.comment, total_comm, total_swap, total_profit, local_start_time, local_close_time
+                    ))
+                    total_synced += 1
+                except Exception as e:
+                    logging.error(f"Error inserting deal {deal.ticket}: {e}")
                 
     conn.commit()
     conn.close()

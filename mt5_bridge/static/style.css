@@ -1,54 +1,27 @@
-/* CSS Variables for Themes */
-:root {
-    /* Light Theme (Default) */
-    --bg-app: #f0f0f0;
-    --bg-panel: #ffffff;
-    --bg-toolbar: #e1e1e1;
-    --bg-header: #f5f5f5;
-    --bg-row-alt: #fafafa;
-    --bg-row-hover: #e8f0fe;
-    --bg-secondary: #f9f9f9;
-    --bg-magic-row: #e6e6e6;
+/* Modern Platform Blend (FreeStoxx/TradingView style) */
+:root, [data-theme="dark"] {
+    --bg-app: #0b0e11; /* Deep dark neutral background */
+    --bg-panel: #15181d; /* Panel background */
+    --bg-toolbar: #1c2026; /* Headers and toolbars */
+    --bg-header: #15181d;
+    --bg-row-alt: #0b0e11;
+    --bg-row-hover: #2a2e39;
+    --bg-secondary: #111418;
+    --bg-magic-row: #1e222d;
     
-    --border-color: #cccccc;
-    --border-dark: #999999;
+    --border-color: #2a2e35;
+    --border-dark: #363a45;
     
-    --text-main: #333333;
-    --text-muted: #666666;
+    --text-main: #d1d4dc; /* Crisp light grey */
+    --text-muted: #787b86; /* Muted grey */
     
-    --color-buy: #388e3c; /* Sharp Green */
-    --color-sell: #d32f2f; /* Sharp Red */
-    --color-buy-bg: #e8f5e9;
-    --color-sell-bg: #ffebee;
+    --color-buy: #089981; /* Sharp modern green */
+    --color-sell: #f23645; /* Sharp modern red */
+    --color-buy-bg: rgba(8, 153, 129, 0.15);
+    --color-sell-bg: rgba(242, 54, 69, 0.15);
     
-    --color-pending: #f57c00;
-    --color-active: #1976d2;
-}
-
-[data-theme="dark"] {
-    /* Dark Theme */
-    --bg-app: #1e1e1e;
-    --bg-panel: #252526;
-    --bg-toolbar: #2d2d30;
-    --bg-header: #333333;
-    --bg-row-alt: #2a2a2b;
-    --bg-row-hover: #094771;
-    --bg-secondary: #2d2d30;
-    --bg-magic-row: #3a3a3e;
-    
-    --border-color: #3f3f46;
-    --border-dark: #555555;
-    
-    --text-main: #cccccc;
-    --text-muted: #999999;
-    
-    --color-buy: #4caf50;
-    --color-sell: #ef5350;
-    --color-buy-bg: rgba(76, 175, 80, 0.15);
-    --color-sell-bg: rgba(239, 83, 80, 0.15);
-    
-    --color-pending: #ffb74d;
-    --color-active: #64b5f6;
+    --color-pending: #f5a623;
+    --color-active: #2962ff; /* Modern active blue */
 }
 
 /* Global Reset & Typography */
@@ -61,8 +34,8 @@
 body {
     background-color: var(--bg-app);
     color: var(--text-main);
-    font-family: "Segoe UI", Tahoma, Arial, sans-serif;
-    font-size: 11px; /* Dense font size */
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 10px; /* Highly dense font size */
     height: 100vh;
     overflow: hidden;
 }
@@ -108,6 +81,34 @@ body {
     background: var(--bg-row-hover);
 }
 
+.main-tabs {
+    display: flex;
+    background-color: var(--bg-panel);
+    border-bottom: 1px solid var(--border-dark);
+    padding: 0 10px;
+}
+
+.main-tab-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    padding: 8px 16px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: bold;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+}
+
+.main-tab-btn:hover {
+    color: var(--text-main);
+}
+
+.main-tab-btn.active {
+    color: var(--color-active);
+    border-bottom-color: var(--color-active);
+}
+
 .status-indicator {
     display: flex;
     align-items: center;
@@ -142,61 +143,55 @@ body {
 
 /* Workspace */
 .workspace {
-    display: flex;
-    flex-direction: column;
+    display: grid;
     flex-grow: 1;
-    padding: 4px;
-    gap: 4px;
+    padding: 8px;
+    gap: 8px;
     overflow: hidden;
+    background: var(--bg-app);
 }
 
-.grid-section {
-    flex-grow: 1;
-    display: flex;
-    flex-direction: column;
+.workspace.workspace-monitoring {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 1fr;
+    grid-template-areas:
+        "overview"
+        "active";
+}
+
+.workspace.workspace-review {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr;
+    grid-template-areas:
+        "logs trading";
+}
+
+.pane {
     background: var(--bg-panel);
     border: 1px solid var(--border-color);
+    border-radius: 2px; /* Very sharp, almost flat */
+    display: flex;
+    flex-direction: column;
     overflow: hidden;
     min-height: 0;
 }
 
-.logs-section {
-    height: 150px; /* Short fixed height to maximize grid */
-    display: flex;
-    flex-direction: column;
-    background: var(--bg-panel);
-    border: 1px solid var(--border-color);
-    transition: height 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    overflow: hidden;
-}
-
-.logs-section.collapsed {
-    height: 30px; /* Only show toolbar */
-}
-
-.section-toolbar {
+.pane-header {
     background: var(--bg-toolbar);
     border-bottom: 1px solid var(--border-color);
+    padding: 6px 10px;
+    font-weight: normal;
+    color: var(--text-main);
+    font-size: 11px;
     display: flex;
-    padding: 0 4px;
+    justify-content: space-between;
+    align-items: center;
 }
 
-.tab {
-    padding: 4px 12px;
-    border: 1px solid var(--border-color);
-    border-bottom: none;
-    background: var(--bg-header);
-    margin-top: 2px;
-    margin-right: 2px;
-    cursor: pointer;
-    font-weight: bold;
-}
-.tab:not(.active):hover {
-    background: var(--bg-row-hover);
-}
-.tab.active {
-    background: var(--bg-panel);
-    border-top: 2px solid var(--color-active);
+.pane-content {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding: 4px;
 }
 
 /* Data Grid (Table) */
@@ -212,19 +207,20 @@ body {
 }
 
 .data-grid th {
-    background: var(--bg-header);
+    background: var(--bg-toolbar);
     border-bottom: 1px solid var(--border-color);
     border-right: 1px solid var(--border-color);
-    padding: 3px 6px;
+    padding: 4px 6px;
     text-align: left;
     font-weight: normal;
+    color: var(--text-muted); /* Muted column headers like the screenshot */
     position: sticky;
     top: 0;
     z-index: 10;
 }
 
 .data-grid td {
-    padding: 2px 6px;
+    padding: 3px 6px;
     border-bottom: 1px solid var(--border-color);
     border-right: 1px solid var(--border-color);
     white-space: nowrap;
@@ -236,14 +232,20 @@ body {
     background-color: var(--bg-row-alt);
 }
 
+.data-grid tr {
+    border-bottom: 1px solid var(--border-color);
+}
+
 .data-grid tr:hover {
     background-color: var(--bg-row-hover);
 }
 
 .tree-header {
     font-weight: bold;
-    background-color: #0369a1 !important;
-    color: white;
+    background-color: #1f2937 !important;
+    color: var(--color-active);
+    border-top: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border-color);
 }
 
 .magic-row {
@@ -715,11 +717,16 @@ input:checked + .slider:before {
 .setting-card {
     background: var(--bg-panel);
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+    border-radius: 0px;
     padding: 12px;
     display: flex;
     flex-direction: column;
     gap: 8px;
+}
+
+.setting-card.in-drawdown {
+    border: 1px solid var(--color-sell) !important;
+    box-shadow: 0 0 8px rgba(242, 54, 69, 0.25);
 }
 
 .card-title {

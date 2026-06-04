@@ -10,84 +10,77 @@
 
     <div class="app-container">
         <!-- Condensed Control Bar -->
-        <header class="toolbar">
-            <div class="toolbar-left">
-                <span class="app-title">Visual Trading Console for MetaTrader</span>
-                <button id="theme-toggle" class="btn-toolbar">Toggle Dark Mode</button>
-                <button id="btn-settings" class="btn-toolbar">Settings</button>
+        <header class="toolbar" style="padding-left: 0; padding-bottom: 0;">
+            <div class="toolbar-left" style="display: flex; align-items: center; gap: 10px; height: 100%;">
+                <!-- Main Navigation Tabs -->
+                <div class="main-tabs" style="height: 100%; border: none; padding-left: 0; background-color: transparent;">
+                    <button class="main-tab-btn active" data-main-tab="monitoring">Monitoring Dashboard</button>
+                    <button class="main-tab-btn" data-main-tab="review">Review Dashboard</button>
+                </div>
+                <button id="btn-settings" class="btn-toolbar" style="margin-left: 10px; margin-bottom: 4px;">Settings</button>
             </div>
             
-            <div class="toolbar-right">
+            <div class="toolbar-right" style="margin-bottom: 4px; padding-right: 8px;">
                 <div class="status-indicator">
                     <span id="mt5-status-icon" class="status-icon offline"></span>
                     <span id="mt5-status-text">MT5 Offline</span>
                 </div>
-                
-
-                <a href="/backtester" class="btn-toolbar" style="text-decoration: none; color: inherit; padding: 2px 8px; margin-left: 10px; background: rgba(255,255,255,0.1);">Open Backtester</a>
             </div>
         </header>
 
         <!-- Main Workspace -->
-        <div class="workspace">
+        <div class="workspace workspace-monitoring" id="main-workspace">
             
-            <!-- Dense Data Grid (Tracker) -->
-            <section class="grid-section">
-                <div class="section-toolbar" style="display: flex; justify-content: space-between; align-items: center; padding-right: 4px;">
-                    <div style="display: flex;">
-                        <span class="tab active" data-tab="overview">Instances Overview</span>
-                        <span class="tab" data-tab="log">Trading Log</span>
-                        <span class="tab" data-tab="story">Story Notes</span>
-                    </div>
-                </div>
-                <div id="overview-container" style="display: flex; flex-direction: column; padding: 10px; height: 100%; overflow-y: auto;">
-                    <div class="health-cards-grid" id="health-cards-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 15px;">
+            <!-- Pane 1: Overview & Health Cards -->
+            <section class="pane pane-overview" style="grid-area: overview;">
+                <div class="pane-header">Instances Overview</div>
+                <div class="pane-content" id="overview-container">
+                    <div class="health-cards-grid" id="health-cards-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px;">
                         <!-- Cards injected here -->
                     </div>
-                    
-                    <div class="active-positions-section" style="margin-top: 20px;">
-                        <h3 style="font-size: 14px; color: var(--text-primary); margin-bottom: 8px;">Active Positions</h3>
-                        <div class="table-container">
-                            <table class="data-grid" id="active-positions-table">
-                                <thead>
-                                    <tr>
-                                        <th style="width: 15%;">Symbol / Ticket</th>
-                                        <th style="width: 10%;">Type</th>
-                                        <th style="width: 10%;">Volume</th>
-                                        <th style="width: 15%;">Open Price</th>
-                                        <th style="width: 15%;">Current Price</th>
-                                        <th style="width: 10%;">Dist. SL (pts)</th>
-                                        <th style="width: 10%;">Risk ($)</th>
-                                        <th style="width: 15%;">Floating P&L</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="active-positions-tbody">
-                                    <!-- Grouped Rows injected here -->
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
                 </div>
-                
-                {% include 'trading_log.html' %}
-                {% include 'story_notes.html' %}
             </section>
-
-            <!-- Logs Section -->
-            <section class="logs-section" id="logs-section">
-                <div class="section-toolbar" style="display: flex; justify-content: space-between; align-items: center; padding-right: 8px;">
-                    <div style="display: flex;">
-                        <span class="tab active" id="logs-tab-title" style="cursor: pointer;">Event Log</span>
-                    </div>
-                    <button id="btn-toggle-logs" class="btn-toolbar" style="padding: 1px 6px; font-size: 10px; height: 18px; line-height: 14px; display: flex; align-items: center; gap: 4px; border-radius: 2px; margin-top: 2px;">
-                        <span id="logs-toggle-icon">▼</span> <span id="logs-toggle-text">Collapse</span>
-                    </button>
+            
+            <!-- Pane 2: Active Positions -->
+            <section class="pane pane-positions" style="grid-area: active;">
+                <div class="pane-header">Active Positions</div>
+                <div class="pane-content table-container">
+                    <table class="data-grid" id="active-positions-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 15%;">Symbol / Ticket</th>
+                                <th style="width: 10%;">Type</th>
+                                <th style="width: 10%;">Volume</th>
+                                <th style="width: 15%;">Open Price</th>
+                                <th style="width: 15%;">Current Price</th>
+                                <th style="width: 10%;">Dist. SL</th>
+                                <th style="width: 10%;">Risk ($)</th>
+                                <th style="width: 15%;">Floating P&L</th>
+                            </tr>
+                        </thead>
+                        <tbody id="active-positions-tbody">
+                            <!-- Grouped Rows injected here -->
+                        </tbody>
+                    </table>
                 </div>
-                <div class="log-container" id="log-box">
-                    <!-- Logs populated by JS -->
+            </section>
+            
+            <!-- Pane 3: Trading Logs -->
+            <section class="pane pane-trading" style="grid-area: trading; display: flex; flex-direction: column;">
+                <div class="pane-header">Trading History & Logs</div>
+                <div class="pane-content" style="padding: 0; display: flex; flex-direction: column; overflow: hidden;">
+                    {% include 'trading_log.html' %}
                 </div>
             </section>
 
+            <!-- Pane 4: Story Notes -->
+            <section class="pane pane-notes" style="grid-area: logs; display: flex; flex-direction: column;">
+                <div class="pane-header">Story Notes</div>
+                <div class="pane-content" style="padding: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+                    {% include 'story_notes.html' %}
+                </div>
+            </section>
+            
         </div>
     </div>
 

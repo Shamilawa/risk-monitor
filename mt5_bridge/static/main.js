@@ -1,26 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
-    // --- Theme Toggling ---
-    const themeBtn = document.getElementById('theme-toggle');
-    const currentTheme = localStorage.getItem('theme') || 'light';
-
-    if (currentTheme === 'dark') {
-        document.body.setAttribute('data-theme', 'dark');
-        themeBtn.innerText = 'Switch to Light Mode';
-    } else {
-        themeBtn.innerText = 'Switch to Dark Mode';
-    }
-
-    themeBtn.addEventListener('click', () => {
-        if (document.body.getAttribute('data-theme') === 'dark') {
-            document.body.removeAttribute('data-theme');
-            localStorage.setItem('theme', 'light');
-            themeBtn.innerText = 'Switch to Dark Mode';
-        } else {
-            document.body.setAttribute('data-theme', 'dark');
-            localStorage.setItem('theme', 'dark');
-            themeBtn.innerText = 'Switch to Light Mode';
-        }
-    });
+    // Force dark mode
+    document.body.setAttribute('data-theme', 'dark');
+    localStorage.setItem('theme', 'dark');
 
     // --- Tooltip Component ---
     const tooltip = document.createElement('div');
@@ -115,6 +96,44 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // Panic Button
+    const btnPanicAll = document.getElementById('btn-panic-all');
+    let panicConfirmState = false;
+    let panicTimeout;
+    
+    if (btnPanicAll) {
+        btnPanicAll.addEventListener('click', () => {
+            if (!panicConfirmState) {
+                panicConfirmState = true;
+                btnPanicAll.innerText = 'CONFIRM CLOSE ALL';
+                btnPanicAll.style.background = '#f23645';
+                btnPanicAll.style.color = '#fff';
+                
+                panicTimeout = setTimeout(() => {
+                    panicConfirmState = false;
+                    btnPanicAll.innerText = 'CLOSE ALL (2-Click)';
+                    btnPanicAll.style.background = 'rgba(242, 54, 69, 0.2)';
+                    btnPanicAll.style.color = '#f23645';
+                }, 3000);
+            } else {
+                clearTimeout(panicTimeout);
+                panicConfirmState = false;
+                btnPanicAll.innerText = 'CLOSING...';
+                
+                fetch('/api/close_all', { method: 'POST' })
+                    .then(res => res.json())
+                    .then(data => {
+                        console.log(data.message);
+                        setTimeout(() => {
+                            btnPanicAll.innerText = 'CLOSE ALL (2-Click)';
+                            btnPanicAll.style.background = 'rgba(242, 54, 69, 0.2)';
+                            btnPanicAll.style.color = '#f23645';
+                        }, 1000);
+                    });
+            }
+        });
+    }
+
     // --- SSE Connection ---
     const eventSource = new EventSource('/api/stream');
 
@@ -169,6 +188,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Functions ---
     function appendLog(message) {
+        if (!logBox) return; // Guard for removed UI
         const div = document.createElement('div');
         div.className = 'log-line';
 
@@ -183,7 +203,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (logBox.childElementCount > 200) {
             logBox.removeChild(logBox.firstChild);
         }
-        if(logBox) logBox.scrollTop = logBox.scrollHeight;
+        logBox.scrollTop = logBox.scrollHeight;
     }
 
 
@@ -615,6 +635,40 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     });
+
+    const mainTabs = document.querySelectorAll('.main-tab-btn');
+    const mainWorkspace = document.getElementById('main-workspace');
+    
+    mainTabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            mainTabs.forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            const view = tab.getAttribute('data-main-tab');
+            
+            if (view === 'monitoring') {
+                mainWorkspace.className = 'workspace workspace-monitoring';
+                document.querySelector('.pane-overview').style.display = 'flex';
+                document.querySelector('.pane-positions').style.display = 'flex';
+                document.querySelector('.pane-trading').style.display = 'none';
+                document.querySelector('.pane-notes').style.display = 'none';
+            } else if (view === 'review') {
+                mainWorkspace.className = 'workspace workspace-review';
+                document.querySelector('.pane-overview').style.display = 'none';
+                document.querySelector('.pane-positions').style.display = 'none';
+                document.querySelector('.pane-trading').style.display = 'flex';
+                document.querySelector('.pane-notes').style.display = 'flex';
+                // Trigger fetches for review data if needed
+                fetchPerformance();
+                fetchStoryDates();
+            }
+        });
+    });
+    
+    // Initial State
+    if (mainWorkspace) {
+        document.querySelector('.pane-trading').style.display = 'none';
+        document.querySelector('.pane-notes').style.display = 'none';
+    }
 
     function getFriendlyStatus(status, isGroup = false, isTP1 = false) {
         if (!status) return 'Unknown';
@@ -1759,161 +1813,89 @@ eventSource.addEventListener('risk_data', (e) => {
 
 });
 
+const equityCharts = {};
+
 function renderHealthCards(instances) {
     const grid = document.getElementById('health-cards-grid');
     if (!grid) return;
     
     instances.forEach(inst => {
         const mlColor = inst.margin_level < 100 ? 'var(--color-sell)' : (inst.margin_level < 300 ? 'orange' : 'var(--color-buy)');
-        const bal = inst.balance.toFixed(2);
-        const eq = inst.equity.toFixed(2);
-        const ml = inst.margin_level > 0 ? inst.margin_level.toFixed(2) + '%' : 'N/A';
-        const riskUsd = inst.total_risk_usd.toFixed(2);
-        const riskPct = inst.balance > 0 ? ((inst.total_risk_usd / inst.balance) * 100).toFixed(2) : '0.00';
-        
-        let riskColor = 'var(--text-primary)';
-        if (riskPct > 5) riskColor = 'var(--color-sell)';
-        else if (riskPct > 2) riskColor = 'orange';
+        const bal = inst.balance.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        const eq = inst.equity.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        const ml = inst.margin_level > 0 ? inst.margin_level.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '%' : 'N/A';
+        const floatingPnl = inst.equity - inst.balance;
+        const ddUsdVal = floatingPnl < 0 ? Math.abs(floatingPnl) : 0;
+        let ddPctValStr = '0.00';
+        if (inst.balance > 0 && ddUsdVal > 0) {
+            const pct = (ddUsdVal / inst.balance) * 100;
+            ddPctValStr = pct < 0.01 ? '<0.01' : pct.toFixed(2);
+        }
+        const ddStr = `$${ddUsdVal.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${ddPctValStr}%)`;
+        const ddVisibility = ddUsdVal > 0 ? 'visible' : 'hidden';
 
         let card = document.getElementById(`health-card-${inst.id}`);
         if (!card) {
             card = document.createElement('div');
             card.id = `health-card-${inst.id}`;
-            card.className = "setting-card";
-            card.style = "display: flex; flex-direction: column; padding: 12px;";
+            card.className = "setting-card" + (ddUsdVal > 0 ? " in-drawdown" : "");
+            card.style = "padding: 0; margin-bottom: 0;";
             
             card.innerHTML = `
-                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 8px; margin-bottom: 8px;">
-                    <strong style="font-size: 14px; color: var(--text-primary);">${inst.name}</strong>
-                    <button class="btn-toolbar btn-close-all" style="display: none;" data-id="${inst.id}" style="color: var(--color-sell); border-color: var(--color-sell); padding: 2px 6px; font-size: 10px; cursor: pointer;">Close All</button>
+                <div style="background-color: var(--bg-toolbar); border-bottom: 1px solid var(--border-color); padding: 4px 6px; display: flex; justify-content: space-between; align-items: center;">
+                    <strong style="font-size: 11px; color: var(--text-primary); text-transform: uppercase;">${inst.name}</strong>
+                    <button class="btn-toolbar btn-close-all" style="display: none;" data-id="${inst.id}">Close All</button>
                 </div>
                 
-                <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                    <span style="color: var(--text-secondary); font-size: 11px;">Balance / Equity</span>
-                    <strong id="card-bal-eq-${inst.id}" style="font-size: 12px;">$${bal} / $${eq}</strong>
-                </div>
-                
-                <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                    <span style="color: var(--text-secondary); font-size: 11px;">Margin Level</span>
-                    <strong id="card-ml-${inst.id}" style="font-size: 12px; color: ${mlColor};">${ml}</strong>
-                </div>
-                
-                <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                    <span style="color: var(--text-secondary); font-size: 11px;">Open Trades</span>
-                    <strong id="card-trades-${inst.id}" style="font-size: 12px;">${inst.positions.length}</strong>
-                </div>
-                
-                <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                    <span style="color: var(--text-secondary); font-size: 11px;">Total Risk</span>
-                    <strong id="card-risk-${inst.id}" style="font-size: 12px; color: ${riskColor};">$${riskUsd} (${riskPct}%)</strong>
-                </div>
-                
-                <div style="height: 120px; width: 100%; margin-top: auto; padding-top: 10px; border: 1px dashed rgba(255,255,255,0.2); position: relative;">
-                    <canvas id="equity-chart-${inst.id}"></canvas>
+                <div style="padding: 4px 6px; display: flex; flex-direction: column; gap: 4px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="color: var(--text-secondary); font-size: 10px;">Balance</span>
+                        <strong id="card-bal-${inst.id}" style="font-size: 10.5px;">$${bal}</strong>
+                    </div>
+                    
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="color: var(--text-secondary); font-size: 10px;">Equity</span>
+                        <strong id="card-eq-${inst.id}" style="font-size: 10.5px;">$${eq}</strong>
+                    </div>
+                    
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="color: var(--text-secondary); font-size: 10px;">Trades</span>
+                        <strong id="card-trades-${inst.id}" style="font-size: 10.5px;">${inst.positions.length}</strong>
+                    </div>
+                    
+                    <div id="card-dd-row-${inst.id}" style="display: flex; visibility: ${ddVisibility}; justify-content: space-between; align-items: center;">
+                        <span style="color: var(--text-secondary); font-size: 10px;">Drawdown</span>
+                        <strong id="card-dd-${inst.id}" style="font-size: 10.5px; color: var(--color-sell); white-space: nowrap;">${ddStr}</strong>
+                    </div>
                 </div>
             `;
             grid.appendChild(card);
         } else {
-            document.getElementById(`card-bal-eq-${inst.id}`).innerText = `$${bal} / $${eq}`;
-            
-            const mlEl = document.getElementById(`card-ml-${inst.id}`);
-            mlEl.innerText = ml;
-            mlEl.style.color = mlColor;
-            
-            document.getElementById(`card-trades-${inst.id}`).innerText = inst.positions.length;
-            
-            const riskEl = document.getElementById(`card-risk-${inst.id}`);
-            riskEl.innerText = `$${riskUsd} (${riskPct}%)`;
-            riskEl.style.color = riskColor;
-            
-            // Force inject canvas container if it's missing (e.g., from old cache)
-            if (!document.getElementById(`equity-chart-${inst.id}`)) {
-                const chartDiv = document.createElement('div');
-                chartDiv.style = "height: 120px; width: 100%; margin-top: auto; padding-top: 10px; position: relative;";
-                chartDiv.innerHTML = `<canvas id="equity-chart-${inst.id}"></canvas>`;
-                card.appendChild(chartDiv);
+            if (ddUsdVal > 0) {
+                card.classList.add('in-drawdown');
+            } else {
+                card.classList.remove('in-drawdown');
             }
-        }
-        
-        // Update charts with historical data
-        const canvas = document.getElementById(`equity-chart-${inst.id}`);
-        if (!canvas) return;
-        
-        const labels = inst.historical_equity ? inst.historical_equity.labels : [];
-        const data = inst.historical_equity ? inst.historical_equity.data : [];
-        
-        if (!equityCharts[inst.id]) {
-            if (typeof Chart !== 'undefined') {
-                const ctx = canvas.getContext('2d');
-                equityCharts[inst.id] = new Chart(ctx, {
-                    type: 'line',
-                    data: {
-                        labels: labels,
-                        datasets: [{
-                            label: 'Equity/Balance',
-                            data: data,
-                            borderColor: '#2196f3',
-                            backgroundColor: 'rgba(33, 150, 243, 0.1)',
-                            fill: true,
-                            tension: 0.2,
-                            pointRadius: 3, // Make points slightly visible for daily ticks
-                            borderWidth: 2
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        animation: false,
-                        scales: {
-                            x: { 
-                                display: true, 
-                                ticks: { font: {size: 9}, color: 'var(--text-muted)' },
-                                grid: { display: false }
-                            },
-                            y: { 
-                                display: true, ticks: { font: {size: 9}, color: 'var(--text-muted)' } 
-                            }
-                        },
-                        plugins: { 
-                            legend: { display: false }, 
-                            tooltip: { 
-                                enabled: true,
-                                callbacks: {
-                                    label: function(context) {
-                                        let label = context.dataset.label || '';
-                                        if (label) {
-                                            label += ': ';
-                                        }
-                                        if (context.parsed.y !== null) {
-                                            label += new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(context.parsed.y);
-                                        }
-                                        return label;
-                                    }
-                                }
-                            } 
-                        }
-                    }
-                });
-            }
-        } else {
-            document.getElementById(`card-bal-eq-${inst.id}`).innerText = `$${bal} / $${eq}`;
+
+            const balEl = document.getElementById(`card-bal-${inst.id}`);
+            if (balEl) balEl.innerText = `$${bal}`;
             
-            const mlEl = document.getElementById(`card-ml-${inst.id}`);
-            mlEl.innerText = ml;
-            mlEl.style.color = mlColor;
+            const eqEl = document.getElementById(`card-eq-${inst.id}`);
+            if (eqEl) eqEl.innerText = `$${eq}`;
             
-            document.getElementById(`card-trades-${inst.id}`).innerText = inst.positions.length;
+            const tradesEl = document.getElementById(`card-trades-${inst.id}`);
+            if (tradesEl) tradesEl.innerText = inst.positions.length;
             
-            const riskEl = document.getElementById(`card-risk-${inst.id}`);
-            riskEl.innerText = `$${riskUsd} (${riskPct}%)`;
-            riskEl.style.color = riskColor;
+            const ddRow = document.getElementById(`card-dd-row-${inst.id}`);
+            const ddEl = document.getElementById(`card-dd-${inst.id}`);
             
-            // Force inject canvas container if it's missing (e.g., from old cache)
-            if (!document.getElementById(`equity-chart-${inst.id}`)) {
-                const chartDiv = document.createElement('div');
-                chartDiv.style = "height: 120px; width: 100%; margin-top: auto; padding-top: 10px; position: relative;";
-                chartDiv.innerHTML = `<canvas id="equity-chart-${inst.id}"></canvas>`;
-                card.appendChild(chartDiv);
+            if (ddRow && ddEl) {
+                if (ddUsdVal > 0) {
+                    ddRow.style.visibility = 'visible';
+                    ddEl.innerText = ddStr;
+                } else {
+                    ddRow.style.visibility = 'hidden';
+                }
             }
         }
     });
@@ -1924,58 +1906,113 @@ function renderActivePositions(instances) {
     const tbody = document.getElementById('active-positions-tbody');
     if (!tbody) return;
     
-    let html = '';
-    
-    instances.forEach(inst => {
-        if (inst.positions.length === 0) return;
-        
+    // Generate unique rendering keys representing the structure
+    const currentKeys = instances.map(inst => {
+        if (inst.positions.length === 0) return '';
         const nodeId = `inst_pos_${inst.id}`;
-        if (activePosExpanded[nodeId] === undefined) {
-            activePosExpanded[nodeId] = true; 
-        }
-        const isExpanded = activePosExpanded[nodeId];
+        const isExpanded = activePosExpanded[nodeId] !== false; // default true
+        const posKeys = isExpanded ? inst.positions.map(p => p.ticket).join(',') : '';
+        return `inst-${inst.id}-${isExpanded}:${posKeys}`;
+    }).filter(Boolean).join('|');
+
+    if (tbody.dataset.renderKeys !== currentKeys) {
+        tbody.dataset.renderKeys = currentKeys;
         
-        let instProfit = 0;
-        inst.positions.forEach(p => instProfit += p.profit);
-        const profColor = instProfit >= 0 ? 'var(--color-buy)' : 'var(--color-sell)';
-        
-        html += `
-            <tr class="tree-header tree-toggle" style="cursor: pointer;" onclick="toggleActivePos('${nodeId}')">
-                <td colspan="8">
-                    <span class="toggle-icon ${isExpanded ? '' : 'collapsed'}">▼</span>
-                    <strong>${inst.name}</strong> 
-                    <span style="font-size: 11px; color: var(--text-muted); margin-left: 10px;">${inst.positions.length} Trades</span>
-                    <span style="float: right; color: ${profColor}; font-weight: bold;">$${instProfit.toFixed(2)}</span>
-                </td>
-            </tr>
-        `;
-        
-        if (isExpanded) {
+        let html = '';
+        instances.forEach(inst => {
+            if (inst.positions.length === 0) return;
+            
+            const nodeId = `inst_pos_${inst.id}`;
+            if (activePosExpanded[nodeId] === undefined) {
+                activePosExpanded[nodeId] = true; 
+            }
+            const isExpanded = activePosExpanded[nodeId];
+            
+            let instProfit = 0;
+            inst.positions.forEach(p => instProfit += p.profit);
+            const profColor = instProfit >= 0 ? 'var(--color-buy)' : 'var(--color-sell)';
+            const instProfitStr = instProfit.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            
+            html += `
+                <tr class="tree-header tree-toggle" style="cursor: pointer;" onclick="toggleActivePos('${nodeId}')">
+                    <td colspan="8" style="padding: 4px 8px;">
+                        <span class="toggle-icon ${isExpanded ? '' : 'collapsed'}">▼</span>
+                        <strong>${inst.name}</strong> 
+                        <span style="font-size: 9px; color: var(--text-muted); margin-left: 10px;" id="inst-count-${inst.id}">${inst.positions.length} Trades</span>
+                        <span style="float: right; color: ${profColor}; font-weight: bold;" id="inst-profit-${inst.id}">$${instProfitStr}</span>
+                    </td>
+                </tr>
+            `;
+            
+            if (isExpanded) {
+                inst.positions.forEach(p => {
+                    const pColor = p.profit >= 0 ? 'var(--color-buy)' : 'var(--color-sell)';
+                    const tClass = p.type === 'BUY' ? 'bdg-buy' : 'bdg-sell';
+                    const distSlStr = p.dist_sl >= 0 ? p.dist_sl.toFixed(1) : 'No SL';
+                    const riskStr = p.risk_usd.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                    const profStr = p.profit.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                    
+                    html += `
+                        <tr id="pos-row-${p.ticket}">
+                            <td class="indent-1" style="padding: 4px 8px;">
+                                <strong>${p.symbol}</strong><br>
+                                <span style="font-size: 8px; color: var(--text-muted);">${p.ticket}</span>
+                            </td>
+                            <td style="padding: 4px 8px;"><span class="badge-dense ${tClass}">${p.type}</span></td>
+                            <td style="padding: 4px 8px;">${p.volume}</td>
+                            <td style="padding: 4px 8px;">${p.price_open}</td>
+                            <td style="padding: 4px 8px;" id="pos-price-${p.ticket}">${p.price_current}</td>
+                            <td style="padding: 4px 8px;" id="pos-sl-${p.ticket}">${distSlStr}</td>
+                            <td style="padding: 4px 8px;" id="pos-risk-${p.ticket}">$${riskStr}</td>
+                            <td style="padding: 4px 8px; color: ${pColor}; font-weight: bold;" id="pos-profit-${p.ticket}">$${profStr}</td>
+                        </tr>
+                    `;
+                });
+            }
+        });
+        tbody.innerHTML = html;
+    } else {
+        // Update changed values in place
+        instances.forEach(inst => {
+            if (inst.positions.length === 0) return;
+            
+            let instProfit = 0;
+            inst.positions.forEach(p => instProfit += p.profit);
+            const profColor = instProfit >= 0 ? 'var(--color-buy)' : 'var(--color-sell)';
+            const instProfitStr = instProfit.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            
+            const countEl = document.getElementById(`inst-count-${inst.id}`);
+            if (countEl) countEl.innerText = `${inst.positions.length} Trades`;
+            
+            const profitEl = document.getElementById(`inst-profit-${inst.id}`);
+            if (profitEl) {
+                profitEl.innerText = `$${instProfitStr}`;
+                profitEl.style.color = profColor;
+            }
+            
             inst.positions.forEach(p => {
                 const pColor = p.profit >= 0 ? 'var(--color-buy)' : 'var(--color-sell)';
-                const tClass = p.type === 'BUY' ? 'bdg-buy' : 'bdg-sell';
                 const distSlStr = p.dist_sl >= 0 ? p.dist_sl.toFixed(1) : 'No SL';
+                const riskStr = p.risk_usd.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                const profStr = p.profit.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
                 
-                html += `
-                    <tr>
-                        <td class="indent-1">
-                            <strong>${p.symbol}</strong><br>
-                            <span style="font-size: 9px; color: var(--text-muted);">${p.ticket}</span>
-                        </td>
-                        <td><span class="badge-dense ${tClass}">${p.type}</span></td>
-                        <td>${p.volume}</td>
-                        <td>${p.price_open}</td>
-                        <td>${p.price_current}</td>
-                        <td>${distSlStr}</td>
-                        <td>$${p.risk_usd.toFixed(2)}</td>
-                        <td style="color: ${pColor}; font-weight: bold;">$${p.profit.toFixed(2)}</td>
-                    </tr>
-                `;
+                const priceEl = document.getElementById(`pos-price-${p.ticket}`);
+                if (priceEl) priceEl.innerText = p.price_current;
+                
+                const slEl = document.getElementById(`pos-sl-${p.ticket}`);
+                if (slEl) slEl.innerText = distSlStr;
+                
+                const riskEl = document.getElementById(`pos-risk-${p.ticket}`);
+                if (riskEl) riskEl.innerText = `$${riskStr}`;
+                
+                const profEl = document.getElementById(`pos-profit-${p.ticket}`);
+                if (profEl) {
+                    profEl.innerText = `$${profStr}`;
+                    profEl.style.color = pColor;
+                }
             });
-        }
-    });
-    
-    tbody.innerHTML = html;
+        });
+    }
 }
 
 window.toggleActivePos = function(nodeId) {
