@@ -11,13 +11,20 @@
     <div class="app-container">
         <!-- Condensed Control Bar -->
         <header class="toolbar" style="padding-left: 0; padding-bottom: 0;">
-            <div class="toolbar-left" style="display: flex; align-items: center; gap: 10px; height: 100%;">
-                <!-- Main Navigation Tabs -->
-                <div class="main-tabs" style="height: 100%; border: none; padding-left: 0; background-color: transparent;">
-                    <button class="main-tab-btn active" data-main-tab="monitoring">Monitoring Dashboard</button>
-                    <button class="main-tab-btn" data-main-tab="review">Review Dashboard</button>
+            <div class="toolbar-left" style="display: flex; align-items: center; gap: 10px; height: 100%; padding-left: 8px;">
+                <strong style="font-size: 11px; letter-spacing: 0.5px; font-weight: bold; color: var(--text-main); margin-bottom: 4px; padding-right: 8px; border-right: 1px solid var(--border-color); height: 16px; display: flex; align-items: center;">VISUAL CONSOLE</strong>
+                <button id="btn-settings" class="btn-toolbar" style="margin-bottom: 4px;">Settings</button>
+                <button id="btn-toggle-dashboard" class="btn-toolbar" style="margin-bottom: 4px; border-color: var(--color-active); color: var(--color-active);">Review Panel ➔</button>
+            </div>
+            
+            <div class="toolbar-center" style="display: flex; align-items: center; gap: 15px; margin-bottom: 4px; font-size: 10px; color: var(--text-muted); font-family: Consolas, monospace;">
+                <div id="toolbar-date" style="font-weight: bold; color: var(--text-main); border-right: 1px solid var(--border-color); padding-right: 15px; letter-spacing: 0.5px;"></div>
+                <div style="display: flex; gap: 14px; align-items: center;">
+                    <div>TOTAL BAL: <strong id="agg-bal" style="color: var(--text-main);">$0.00</strong></div>
+                    <div>TOTAL EQ: <strong id="agg-eq" style="color: var(--text-main);">$0.00</strong></div>
+                    <div>COMBINED P&L: <strong id="agg-pnl" style="color: var(--text-main);">$0.00</strong></div>
+                    <div>ACTIVE TRADES: <strong id="agg-trades" style="color: var(--text-main);">0</strong></div>
                 </div>
-                <button id="btn-settings" class="btn-toolbar" style="margin-left: 10px; margin-bottom: 4px;">Settings</button>
             </div>
             
             <div class="toolbar-right" style="margin-bottom: 4px; padding-right: 8px;">

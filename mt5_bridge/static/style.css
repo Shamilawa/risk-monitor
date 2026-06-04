@@ -736,6 +736,56 @@ input:checked + .slider:before {
     background: linear-gradient(180deg, var(--bg-panel) 80%, rgba(8, 153, 129, 0.04) 100%) !important;
 }
 
+.setting-card .card-header {
+    background-color: var(--bg-toolbar);
+    border-bottom: 1px solid var(--border-color);
+    padding: 6px 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: background 0.2s ease;
+}
+
+.setting-card.in-profit .card-header {
+    background: linear-gradient(90deg, rgba(8, 153, 129, 0.1) 0%, var(--bg-toolbar) 100%) !important;
+}
+
+.setting-card.in-drawdown .card-header {
+    background: linear-gradient(90deg, rgba(242, 54, 69, 0.1) 0%, var(--bg-toolbar) 100%) !important;
+}
+
+.setting-card .card-header strong {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-main);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.setting-card .card-header strong::before {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: var(--color-active);
+    box-shadow: 0 0 4px var(--color-active);
+    transition: all 0.2s ease;
+}
+
+.setting-card.in-profit .card-header strong::before {
+    background-color: var(--color-buy);
+    box-shadow: 0 0 6px var(--color-buy);
+}
+
+.setting-card.in-drawdown .card-header strong::before {
+    background-color: var(--color-sell);
+    box-shadow: 0 0 6px var(--color-sell);
+}
+
 .card-title {
     font-size: 11px;
     font-weight: bold;
@@ -1274,4 +1324,22 @@ input:checked + .slider:before {
         -webkit-print-color-adjust: exact !important;
         print-color-adjust: exact !important;
     }
+}
+
+@keyframes flash-green {
+    0% { background-color: rgba(8, 153, 129, 0.35); }
+    100% { background-color: transparent; }
+}
+
+@keyframes flash-red {
+    0% { background-color: rgba(242, 54, 69, 0.35); }
+    100% { background-color: transparent; }
+}
+
+.flash-up {
+    animation: flash-green 0.8s ease-out;
+}
+
+.flash-down {
+    animation: flash-red 0.8s ease-out;
 }

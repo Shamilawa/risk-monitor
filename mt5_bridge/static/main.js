@@ -636,33 +636,40 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    const mainTabs = document.querySelectorAll('.main-tab-btn');
+    const toggleDashBtn = document.getElementById('btn-toggle-dashboard');
     const mainWorkspace = document.getElementById('main-workspace');
+    let currentDashboard = 'monitoring';
     
-    mainTabs.forEach(tab => {
-        tab.addEventListener('click', () => {
-            mainTabs.forEach(t => t.classList.remove('active'));
-            tab.classList.add('active');
-            const view = tab.getAttribute('data-main-tab');
-            
-            if (view === 'monitoring') {
-                mainWorkspace.className = 'workspace workspace-monitoring';
-                document.querySelector('.pane-overview').style.display = 'flex';
-                document.querySelector('.pane-positions').style.display = 'flex';
-                document.querySelector('.pane-trading').style.display = 'none';
-                document.querySelector('.pane-notes').style.display = 'none';
-            } else if (view === 'review') {
+    if (toggleDashBtn) {
+        toggleDashBtn.addEventListener('click', () => {
+            if (currentDashboard === 'monitoring') {
+                currentDashboard = 'review';
+                toggleDashBtn.innerText = '◀ Monitoring';
+                toggleDashBtn.style.color = 'var(--text-main)';
+                toggleDashBtn.style.borderColor = 'var(--border-color)';
+                
                 mainWorkspace.className = 'workspace workspace-review';
                 document.querySelector('.pane-overview').style.display = 'none';
                 document.querySelector('.pane-positions').style.display = 'none';
                 document.querySelector('.pane-trading').style.display = 'flex';
                 document.querySelector('.pane-notes').style.display = 'flex';
-                // Trigger fetches for review data if needed
+                
                 fetchPerformance();
                 fetchStoryDates();
+            } else {
+                currentDashboard = 'monitoring';
+                toggleDashBtn.innerText = 'Review Panel ➔';
+                toggleDashBtn.style.color = 'var(--color-active)';
+                toggleDashBtn.style.borderColor = 'var(--color-active)';
+                
+                mainWorkspace.className = 'workspace workspace-monitoring';
+                document.querySelector('.pane-overview').style.display = 'flex';
+                document.querySelector('.pane-positions').style.display = 'flex';
+                document.querySelector('.pane-trading').style.display = 'none';
+                document.querySelector('.pane-notes').style.display = 'none';
             }
         });
-    });
+    }
     
     // Initial State
     if (mainWorkspace) {
@@ -1814,12 +1821,21 @@ eventSource.addEventListener('risk_data', (e) => {
 });
 
 const equityCharts = {};
+const prevCardPnls = {};
 
 function renderHealthCards(instances) {
     const grid = document.getElementById('health-cards-grid');
     if (!grid) return;
     
+    let totalBal = 0;
+    let totalEq = 0;
+    let totalTrades = 0;
+    
     instances.forEach(inst => {
+        totalBal += inst.balance;
+        totalEq += inst.equity;
+        totalTrades += inst.positions.length;
+        
         const mlColor = inst.margin_level < 100 ? 'var(--color-sell)' : (inst.margin_level < 300 ? 'orange' : 'var(--color-buy)');
         const bal = inst.balance.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
         const eq = inst.equity.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -1850,8 +1866,8 @@ function renderHealthCards(instances) {
             card.style = "padding: 0; margin-bottom: 0;";
             
             card.innerHTML = `
-                <div style="background-color: var(--bg-toolbar); border-bottom: 1px solid var(--border-color); padding: 4px 6px; display: flex; justify-content: space-between; align-items: center;">
-                    <strong style="font-size: 11px; color: var(--text-primary); text-transform: uppercase;">${inst.name}</strong>
+                <div class="card-header">
+                    <strong>${inst.name}</strong>
                     <button class="btn-toolbar btn-close-all" style="display: none;" data-id="${inst.id}">Close All</button>
                 </div>
                 
@@ -1878,6 +1894,7 @@ function renderHealthCards(instances) {
                 </div>
             `;
             grid.appendChild(card);
+            prevCardPnls[inst.id] = floatingPnl;
         } else {
             if (floatingPnl > 0) {
                 card.classList.add('in-profit');
@@ -1900,13 +1917,63 @@ function renderHealthCards(instances) {
             
             const ddEl = document.getElementById(`card-dd-${inst.id}`);
             if (ddEl) {
+                const prevVal = prevCardPnls[inst.id] !== undefined ? prevCardPnls[inst.id] : floatingPnl;
+                const newVal = floatingPnl;
+                prevCardPnls[inst.id] = newVal;
+                
                 ddEl.innerText = pnlStr;
                 ddEl.style.color = pnlColor;
+                
+                if (newVal > prevVal) {
+                    ddEl.classList.remove('flash-up', 'flash-down');
+                    void ddEl.offsetWidth; // trigger reflow
+                    ddEl.classList.add('flash-up');
+                } else if (newVal < prevVal) {
+                    ddEl.classList.remove('flash-up', 'flash-down');
+                    void ddEl.offsetWidth; // trigger reflow
+                    ddEl.classList.add('flash-down');
+                }
             }
         }
     });
+
+    // Compute and update aggregated header statistics
+    const totalPnl = totalEq - totalBal;
+    const aggPnlAbs = Math.abs(totalPnl);
+    let aggPnlPctStr = '0.00';
+    if (totalBal > 0 && aggPnlAbs > 0) {
+        const pct = (aggPnlAbs / totalBal) * 100;
+        aggPnlPctStr = pct < 0.01 ? '<0.01' : pct.toFixed(2);
+    }
+    const aggSign = totalPnl > 0 ? '+' : (totalPnl < 0 ? '-' : '');
+    const aggPnlStr = `${aggSign}$${aggPnlAbs.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${aggPnlPctStr}%)`;
+    const aggPnlColor = totalPnl > 0 ? 'var(--color-buy)' : (totalPnl < 0 ? 'var(--color-sell)' : 'var(--text-main)');
+    
+    const aggBalEl = document.getElementById('agg-bal');
+    if (aggBalEl) aggBalEl.innerText = `$${totalBal.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+    
+    const aggEqEl = document.getElementById('agg-eq');
+    if (aggEqEl) aggEqEl.innerText = `$${totalEq.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+    
+    const aggPnlEl = document.getElementById('agg-pnl');
+    if (aggPnlEl) {
+        aggPnlEl.innerText = aggPnlStr;
+        aggPnlEl.style.color = aggPnlColor;
+    }
+    
+    const aggTradesEl = document.getElementById('agg-trades');
+    if (aggTradesEl) aggTradesEl.innerText = totalTrades;
+
+    const dateEl = document.getElementById('toolbar-date');
+    if (dateEl) {
+        const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+        dateEl.innerText = new Date().toLocaleDateString('en-US', options).toUpperCase();
+    }
 }
 const activePosExpanded = {};
+const prevProfits = {};
+const prevInstProfits = {};
+const prevPrices = {};
 
 function renderActivePositions(instances) {
     const tbody = document.getElementById('active-positions-tbody');
@@ -1935,7 +2002,12 @@ function renderActivePositions(instances) {
             const isExpanded = activePosExpanded[nodeId];
             
             let instProfit = 0;
-            inst.positions.forEach(p => instProfit += p.profit);
+            inst.positions.forEach(p => {
+                instProfit += p.profit;
+                prevProfits[p.ticket] = p.profit;
+                prevPrices[p.ticket] = p.price_current;
+            });
+            prevInstProfits[inst.id] = instProfit;
             const profColor = instProfit >= 0 ? 'var(--color-buy)' : 'var(--color-sell)';
             const instProfitStr = instProfit.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
             
@@ -1961,8 +2033,7 @@ function renderActivePositions(instances) {
                     html += `
                         <tr id="pos-row-${p.ticket}">
                             <td class="indent-1" style="padding: 4px 8px;">
-                                <strong>${p.symbol}</strong><br>
-                                <span style="font-size: 8px; color: var(--text-muted);">${p.ticket}</span>
+                                <strong>${p.symbol}</strong>
                             </td>
                             <td style="padding: 4px 8px;"><span class="badge-dense ${tClass}">${p.type}</span></td>
                             <td style="padding: 4px 8px;">${p.volume}</td>
@@ -1992,8 +2063,22 @@ function renderActivePositions(instances) {
             
             const profitEl = document.getElementById(`inst-profit-${inst.id}`);
             if (profitEl) {
+                const prevVal = prevInstProfits[inst.id] !== undefined ? prevInstProfits[inst.id] : instProfit;
+                const newVal = instProfit;
+                prevInstProfits[inst.id] = newVal;
+                
                 profitEl.innerText = `$${instProfitStr}`;
                 profitEl.style.color = profColor;
+                
+                if (newVal > prevVal) {
+                    profitEl.classList.remove('flash-up', 'flash-down');
+                    void profitEl.offsetWidth; // trigger reflow
+                    profitEl.classList.add('flash-up');
+                } else if (newVal < prevVal) {
+                    profitEl.classList.remove('flash-up', 'flash-down');
+                    void profitEl.offsetWidth; // trigger reflow
+                    profitEl.classList.add('flash-down');
+                }
             }
             
             inst.positions.forEach(p => {
@@ -2003,7 +2088,23 @@ function renderActivePositions(instances) {
                 const profStr = p.profit.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
                 
                 const priceEl = document.getElementById(`pos-price-${p.ticket}`);
-                if (priceEl) priceEl.innerText = p.price_current;
+                if (priceEl) {
+                    const prevVal = prevPrices[p.ticket] !== undefined ? prevPrices[p.ticket] : p.price_current;
+                    const newVal = p.price_current;
+                    prevPrices[p.ticket] = newVal;
+                    
+                    priceEl.innerText = p.price_current;
+                    
+                    if (newVal > prevVal) {
+                        priceEl.classList.remove('flash-up', 'flash-down');
+                        void priceEl.offsetWidth; // trigger reflow
+                        priceEl.classList.add('flash-up');
+                    } else if (newVal < prevVal) {
+                        priceEl.classList.remove('flash-up', 'flash-down');
+                        void priceEl.offsetWidth; // trigger reflow
+                        priceEl.classList.add('flash-down');
+                    }
+                }
                 
                 const slEl = document.getElementById(`pos-sl-${p.ticket}`);
                 if (slEl) slEl.innerText = distSlStr;
@@ -2013,8 +2114,22 @@ function renderActivePositions(instances) {
                 
                 const profEl = document.getElementById(`pos-profit-${p.ticket}`);
                 if (profEl) {
+                    const prevVal = prevProfits[p.ticket] !== undefined ? prevProfits[p.ticket] : p.profit;
+                    const newVal = p.profit;
+                    prevProfits[p.ticket] = newVal;
+                    
                     profEl.innerText = `$${profStr}`;
                     profEl.style.color = pColor;
+                    
+                    if (newVal > prevVal) {
+                        profEl.classList.remove('flash-up', 'flash-down');
+                        void profEl.offsetWidth; // trigger reflow
+                        profEl.classList.add('flash-up');
+                    } else if (newVal < prevVal) {
+                        profEl.classList.remove('flash-up', 'flash-down');
+                        void profEl.offsetWidth; // trigger reflow
+                        profEl.classList.add('flash-down');
+                    }
                 }
             });
         });
