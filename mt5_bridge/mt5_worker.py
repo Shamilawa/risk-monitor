@@ -31,6 +31,7 @@ def provider_loop(push_socket):
                         break
                         
     seen_tickets = set()
+    active_positions_cache = {}
     
     while True:
         # Polling using integers (broker time posix timestamps) is 100% robust
@@ -62,19 +63,66 @@ def provider_loop(push_socket):
                             "price": deal.price,
                             "sl": sl,
                             "tp": tp,
-                            "provider_ticket": deal.ticket
+                            "provider_ticket": deal.position_id
                         }
                         push_socket.send_json(payload)
                         print(f"[PROVIDER] Detected & Routed Trade: {payload['action']} {payload['symbol']} (Vol: {payload['volume']})")
+                    elif deal.entry in [mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_OUT_BY]:
+                        payload = {
+                            "type": "CLOSE_TRADE",
+                            "symbol": deal.symbol,
+                            "action": "BUY" if deal.type == mt5.DEAL_TYPE_BUY else "SELL", # OUT deal for BUY position is SELL
+                            "volume": deal.volume,
+                            "provider_ticket": deal.position_id
+                        }
+                        push_socket.send_json(payload)
+                        print(f"[PROVIDER] Detected & Routed Close: {deal.symbol} (Vol: {deal.volume}, PosID: {deal.position_id})")
+        
+        # Track SL/TP Modifications
+        positions = mt5.positions_get()
+        current_positions = {}
+        if positions:
+            for p in positions:
+                current_positions[p.ticket] = {"sl": p.sl, "tp": p.tp}
+                
+                if p.ticket in active_positions_cache:
+                    cached = active_positions_cache[p.ticket]
+                    # Check if SL or TP changed
+                    if abs(cached["sl"] - p.sl) > 0.00001 or abs(cached["tp"] - p.tp) > 0.00001:
+                        payload = {
+                            "type": "MODIFY_TRADE",
+                            "provider_ticket": p.ticket,
+                            "sl": p.sl,
+                            "tp": p.tp
+                        }
+                        push_socket.send_json(payload)
+                        print(f"[PROVIDER] Detected & Routed Modification: PosID {p.ticket} (SL: {p.sl}, TP: {p.tp})")
+        
+        active_positions_cache = current_positions
         
         # 10ms sleep for ultra-low latency without 100% CPU lock
         time.sleep(0.01)
+
+def load_ticket_map(instance_id):
+    import os
+    file_path = f"ticket_map_{instance_id}.json"
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_ticket_map(instance_id, mapping):
+    with open(f"ticket_map_{instance_id}.json", "w") as f:
+        json.dump(mapping, f)
 
 def execute_trade(action, symbol, volume, sl, tp):
     tick = mt5.symbol_info_tick(symbol)
     if not tick:
         print(f"[CONSUMER] Failed to get tick for {symbol}")
-        return
+        return None
         
     order_type = mt5.ORDER_TYPE_BUY if action == "BUY" else mt5.ORDER_TYPE_SELL
     price = tick.ask if action == "BUY" else tick.bid
@@ -106,11 +154,78 @@ def execute_trade(action, symbol, volume, sl, tp):
 
     if result.retcode != mt5.TRADE_RETCODE_DONE:
         print(f"[CONSUMER] Order failed: {result.comment} (Retcode: {result.retcode})")
+        return None
     else:
         print(f"[CONSUMER] Order executed successfully: Ticket {result.order}")
+        return result.order
+
+def close_trade(ticket, volume):
+    position = mt5.positions_get(ticket=ticket)
+    if not position:
+        print(f"[CONSUMER] Position {ticket} not found for closure.")
+        return
+        
+    position = position[0]
+    tick = mt5.symbol_info_tick(position.symbol)
+    if not tick:
+        return
+        
+    order_type = mt5.ORDER_TYPE_SELL if position.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
+    price = tick.bid if position.type == mt5.POSITION_TYPE_BUY else tick.ask
+    
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": position.symbol,
+        "volume": float(volume),
+        "type": order_type,
+        "position": ticket,
+        "price": price,
+        "deviation": 20,
+        "magic": 777888,
+        "comment": "Copier Close",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+    
+    result = mt5.order_send(request)
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        request["type_filling"] = mt5.ORDER_FILLING_FOK
+        result = mt5.order_send(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            request["type_filling"] = mt5.ORDER_FILLING_RETURN
+            result = mt5.order_send(request)
+            
+    if result.retcode == mt5.TRADE_RETCODE_DONE:
+        print(f"[CONSUMER] Trade Closed: {ticket}")
+    else:
+        print(f"[CONSUMER] Close Failed: {result.retcode}")
+
+def modify_trade(ticket, sl, tp):
+    position = mt5.positions_get(ticket=ticket)
+    if not position:
+        print(f"[CONSUMER] Position {ticket} not found for modification.")
+        return
+        
+    position = position[0]
+    
+    request = {
+        "action": mt5.TRADE_ACTION_SLTP,
+        "symbol": position.symbol,
+        "position": ticket,
+        "sl": float(sl),
+        "tp": float(tp)
+    }
+    
+    result = mt5.order_send(request)
+    if result.retcode == mt5.TRADE_RETCODE_DONE:
+        print(f"[CONSUMER] Trade Modified: {ticket} (SL: {sl}, TP: {tp})")
+    else:
+        print(f"[CONSUMER] Modify Failed: {result.retcode}")
 
 def consumer_loop(sub_socket, args):
     print(f"[CONSUMER] Subscribed and waiting for signals. Risk: {args.risk_type}")
+    ticket_map = load_ticket_map(args.id)
+    
     while True:
         try:
             msg = sub_socket.recv_json()
@@ -162,7 +277,32 @@ def consumer_loop(sub_socket, args):
                 # Execute
                 # We round to 2 decimals for MT5 standard volume
                 calc_volume = round(calc_volume, 2)
-                execute_trade(action, symbol, calc_volume, msg["sl"], msg["tp"])
+                new_ticket = execute_trade(action, symbol, calc_volume, msg["sl"], msg["tp"])
+                
+                if new_ticket and "provider_ticket" in msg:
+                    ticket_map[str(msg["provider_ticket"])] = new_ticket
+                    save_ticket_map(args.id, ticket_map)
+                    
+            elif msg.get("type") == "CLOSE_TRADE":
+                print(f"[CONSUMER] Received Close Signal: {msg}")
+                pt = str(msg.get("provider_ticket"))
+                if pt in ticket_map:
+                    sub_ticket = ticket_map[pt]
+                    pos = mt5.positions_get(ticket=sub_ticket)
+                    if pos:
+                        close_trade(sub_ticket, pos[0].volume)
+                else:
+                    print(f"[CONSUMER] Close ignored: provider_ticket {pt} not in map.")
+                    
+            elif msg.get("type") == "MODIFY_TRADE":
+                print(f"[CONSUMER] Received Modify Signal: {msg}")
+                pt = str(msg.get("provider_ticket"))
+                if pt in ticket_map:
+                    sub_ticket = ticket_map[pt]
+                    modify_trade(sub_ticket, msg["sl"], msg["tp"])
+                else:
+                    print(f"[CONSUMER] Modify ignored: provider_ticket {pt} not in map.")
+                    
         except Exception as e:
             print(f"[CONSUMER] Error processing signal: {e}")
 

@@ -14,7 +14,7 @@ import random
 import time
 import webbrowser
 import concurrent.futures
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 load_dotenv()
 
@@ -437,22 +437,22 @@ def fetch_instance_data(inst):
                     
             current_time = time.time()
             if inst_id not in mt5_history_cache or (current_time - mt5_history_cache[inst_id]["timestamp"] > 60):
-                now_dt = datetime.now()
+                now_dt = datetime.utcnow()
                 today_start_dt = datetime(now_dt.year, now_dt.month, now_dt.day)
                 yesterday_start_dt = today_start_dt - timedelta(days=1)
                 this_week_start_dt = today_start_dt - timedelta(days=now_dt.weekday())
                 last_week_start_dt = this_week_start_dt - timedelta(days=7)
                 this_month_start_dt = datetime(now_dt.year, now_dt.month, 1)
 
-                min_date = min(yesterday_start_dt, last_week_start_dt, this_month_start_dt)
-                
-                deals = mt5.history_deals_get(min_date, now_dt)
+                deals = mt5.history_deals_get(0, 2147483647)
                 gains = {"today": 0.0, "yesterday": 0.0, "week": 0.0, "last_week": 0.0, "month": 0.0}
                 
                 if deals:
                     for d in deals:
-                        if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL):
-                            deal_time = datetime.fromtimestamp(d.time)
+                        # Ensure we only count deal entries that closed positions (DEAL_ENTRY_OUT / DEAL_ENTRY_OUT_BY)
+                        if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL) and d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_OUT_BY):
+                            # Treat the MT5 integer as a raw date without local timezone corruption
+                            deal_time = datetime.fromtimestamp(d.time, timezone.utc).replace(tzinfo=None)
                             profit = d.profit + d.commission + d.swap
                             
                             if deal_time >= today_start_dt:
