@@ -75,7 +75,7 @@ def execute_trade(action, symbol, volume, sl, tp):
         "tp": float(tp),
         "deviation": 20,
         "magic": 777888, # Copier Magic
-        "comment": "Copier Execution",
+        "comment": "",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
