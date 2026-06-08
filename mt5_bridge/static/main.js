@@ -2320,4 +2320,54 @@ window.toggleActivePositions = function() {
             icon.innerText = '▶';
         }
     }
-};
+};
+
+// Workspace Splitter Logic
+document.addEventListener('DOMContentLoaded', () => {
+    let isDraggingSplitter = false;
+    const splitter = document.getElementById('main-splitter');
+    const workspace = document.getElementById('main-workspace');
+
+    if (splitter && workspace) {
+        // Restore saved position
+        const savedTopHeight = localStorage.getItem('workspaceTopHeight');
+        if (savedTopHeight) {
+            workspace.style.gridTemplateRows = `${savedTopHeight}px 4px 1fr`;
+        }
+
+        splitter.addEventListener('mousedown', (e) => {
+            isDraggingSplitter = true;
+            splitter.classList.add('active');
+            document.body.style.cursor = 'row-resize';
+            e.preventDefault();
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDraggingSplitter) return;
+            
+            const workspaceRect = workspace.getBoundingClientRect();
+            const relativeY = e.clientY - workspaceRect.top;
+            
+            // Limit the top pane to a minimum of 150px and bottom pane minimum of 150px
+            const topHeight = Math.max(150, Math.min(relativeY, workspaceRect.height - 150));
+            
+            workspace.style.gridTemplateRows = `${topHeight}px 4px 1fr`;
+            localStorage.setItem('workspaceTopHeight', topHeight);
+            
+            // Redraw LeaderLines on resize
+            if (typeof flowLines !== 'undefined') {
+                for (const key in flowLines) {
+                    try { flowLines[key].position(); } catch(err) {}
+                }
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (isDraggingSplitter) {
+                isDraggingSplitter = false;
+                splitter.classList.remove('active');
+                document.body.style.cursor = '';
+            }
+        });
+    }
+});

@@ -153,10 +153,12 @@ body {
 
 .workspace.workspace-monitoring {
     grid-template-columns: 1fr;
-    grid-template-rows: 1fr 1fr;
+    grid-template-rows: 1fr 4px 1fr;
     grid-template-areas:
         "overview"
+        "splitter"
         "active";
+    row-gap: 4px;
 }
 
 .workspace.workspace-review {
@@ -194,7 +196,24 @@ body {
 }
 
 .workspace.workspace-monitoring:has(.pane-positions.collapsed) {
-    grid-template-rows: 1fr auto;
+    grid-template-rows: 1fr 0px auto;
+}
+
+.workspace.workspace-monitoring:has(.pane-positions.collapsed) .splitter-horizontal {
+    display: none;
+}
+
+.splitter-horizontal {
+    height: 4px;
+    background-color: var(--border-color);
+    cursor: row-resize;
+    z-index: 100;
+    transition: background-color 0.2s;
+    border-radius: 2px;
+}
+
+.splitter-horizontal:hover, .splitter-horizontal.active {
+    background-color: var(--color-active);
 }
 
 .pane-content {
