@@ -12,38 +12,56 @@
 
     <div class="app-container">
         <!-- Condensed Control Bar -->
-        <header class="toolbar" style="padding-left: 0; padding-bottom: 0;">
-            <div class="toolbar-left"
-                style="display: flex; align-items: center; gap: 10px; height: 100%; padding-left: 8px;">
-                <strong
-                    style="font-size: 11px; letter-spacing: 0.5px; font-weight: bold; color: var(--text-main); margin-bottom: 4px; padding-right: 8px; border-right: 1px solid var(--border-color); height: 16px; display: flex; align-items: center;">VISUAL
-                    CONSOLE</strong>
-                <button id="btn-settings" class="btn-toolbar" style="margin-bottom: 4px;">Settings</button>
-                <button id="btn-copier" class="btn-toolbar"
-                    style="margin-bottom: 4px; border-color: #8bb4f7; color: #8bb4f7;"
-                    onclick="window.location.href='/copier'">Trade Copier ⧉</button>
-                <button id="btn-toggle-dashboard" class="btn-toolbar"
-                    style="margin-bottom: 4px; border-color: var(--color-active); color: var(--color-active);">Review
-                    Panel ➔</button>
-            </div>
-
-            <div class="toolbar-center"
-                style="display: flex; align-items: center; gap: 15px; margin-bottom: 4px; font-size: 10px; color: var(--text-muted); font-family: Consolas, monospace;">
-                <div id="toolbar-date"
-                    style="font-weight: bold; color: var(--text-main); border-right: 1px solid var(--border-color); padding-right: 15px; letter-spacing: 0.5px;">
+        <header class="terminal-header">
+            <div class="th-left">
+                <div class="th-brand">
+                    <span class="th-logo"></span>
+                    <strong>VISUAL CONSOLE</strong>
                 </div>
-                <div style="display: flex; gap: 14px; align-items: center;">
-                    <div>TOTAL BAL: <strong id="agg-bal" style="color: var(--text-main);">$0.00</strong></div>
-                    <div>TOTAL EQ: <strong id="agg-eq" style="color: var(--text-main);">$0.00</strong></div>
-                    <div>COMBINED P&L: <strong id="agg-pnl" style="color: var(--text-main);">$0.00</strong></div>
-                    <div>ACTIVE TRADES: <strong id="agg-trades" style="color: var(--text-main);">0</strong></div>
+                <div class="th-nav">
+                    <div class="th-tabs">
+                        <button class="th-tab active" onclick="window.location.href='/'">Dashboard</button>
+                        <button class="th-tab" onclick="window.location.href='/copier'">Trade Copier</button>
+                    </div>
+                    <div class="th-divider"></div>
+                    <button id="btn-toggle-dashboard" class="th-btn-ghost">Review Mode</button>
+                    <button id="btn-settings" class="th-btn-ghost">⚙ Settings</button>
                 </div>
             </div>
 
-            <div class="toolbar-right" style="margin-bottom: 4px; padding-right: 8px;">
-                <div class="status-indicator">
-                    <span id="mt5-status-icon" class="status-icon offline"></span>
-                    <span id="mt5-status-text">MT5 Offline</span>
+            <div class="th-center">
+                <div class="th-ticker">
+                    <div class="ticker-item">
+                        <span class="t-label">DATE</span>
+                        <span class="t-value" id="toolbar-date">--</span>
+                    </div>
+                    <div class="ticker-divider"></div>
+                    <div class="ticker-item">
+                        <span class="t-label">TOTAL BAL</span>
+                        <span class="t-value highlight" id="agg-bal">$0.00</span>
+                    </div>
+                    <div class="ticker-item">
+                        <span class="t-label">TOTAL EQ</span>
+                        <span class="t-value highlight" id="agg-eq">$0.00</span>
+                    </div>
+                    <div class="ticker-item">
+                        <span class="t-label">COMBINED P&L</span>
+                        <span class="t-value" id="agg-pnl">$0.00</span>
+                    </div>
+                    <div class="ticker-divider"></div>
+                    <div class="ticker-item">
+                        <span class="t-label">ACTIVE TRADES</span>
+                        <span class="t-value" id="agg-trades">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="th-right">
+                <div class="th-status-box">
+                    <div class="led-indicator">
+                        <span id="mt5-status-icon" class="led offline"></span>
+                    </div>
+                    <span id="mt5-status-text" class="status-text">MT5: Offline</span>
                 </div>
             </div>
         </header>
@@ -149,11 +167,7 @@
                 <button id="btn-close-settings" class="btn-close-modal" aria-label="Close Settings">&times;</button>
             </div>
 
-            <!-- Navigation Tabs -->
-            <div class="settings-tabs">
-                <button class="settings-tab-btn active" data-settings-tab="global">Global Settings</button>
-                <button class="settings-tab-btn" data-settings-tab="instances">MT5 Instances</button>
-            </div>
+            <!-- Navigation Tabs Removed (Global Only) -->
 
             <div class="modal-body">
                 <!-- Panel 1: Global Settings -->
@@ -193,83 +207,7 @@
                     </div>
                 </div>
 
-                <!-- Panel 2: MT5 Instances -->
-                <div id="settings-panel-instances" class="settings-panel">
-                    <div class="settings-group">
-                        <div class="instance-list-container">
-                            <span class="section-subtitle">Configured Instances</span>
-                            <div class="instance-list" id="instance-list">
-                                <!-- Instances injected here -->
-                            </div>
-                        </div>
-
-                        <div class="setting-card add-instance-card">
-                            <span id="heading-add-instance" class="card-title">Add New Instance</span>
-
-                            <div class="form-grid">
-                                <div class="input-field-group col-2-3">
-                                    <label for="new-instance-name">Instance Name</label>
-                                    <input type="text" id="new-instance-name" placeholder="e.g. Pepperstone Live">
-                                </div>
-                                <div class="input-field-group col-1-3">
-                                    <label for="new-instance-risk">Risk Amount ($)</label>
-                                    <input type="number" id="new-instance-risk" value="100">
-                                </div>
-
-                                <div class="input-field-group col-1-3">
-                                    <label for="new-instance-profit-limit">Profit Limit ($)</label>
-                                    <input type="number" id="new-instance-profit-limit" placeholder="0 = No limit"
-                                        value="0">
-                                </div>
-
-                                <div class="input-field-group col-full">
-                                    <label for="new-instance-path">MetaTrader 5 Executable Path</label>
-                                    <div class="path-input-wrapper">
-                                        <input type="text" id="new-instance-path"
-                                            placeholder="C:\Program Files\...\terminal64.exe">
-                                        <button id="btn-browse-path" class="btn-secondary-premium">Browse...</button>
-                                    </div>
-                                </div>
-
-                                <div class="input-field-group col-full">
-                                    <label for="new-instance-mapping">Symbol Mapping</label>
-                                    <input type="text" id="new-instance-mapping"
-                                        placeholder="e.g. XAUUSD:GOLD,EURUSD:EURUSD.m">
-                                    <span class="input-tip">Format: TV_SYMBOL:MT5_SYMBOL (comma-separated list)</span>
-                                </div>
-
-                                <div class="input-field-group col-2-3">
-                                    <label for="new-instance-timeframe">Accepted Timeframe</label>
-                                    <select id="new-instance-timeframe">
-                                        <option value="all">All Timeframes</option>
-                                        <option value="1">1 min</option>
-                                        <option value="3">3 mins</option>
-                                        <option value="5">5 mins</option>
-                                        <option value="15">15 mins</option>
-                                        <option value="30">30 mins</option>
-                                        <option value="60">1 hour</option>
-                                        <option value="240">4 hours</option>
-                                        <option value="D">Daily</option>
-                                    </select>
-                                </div>
-
-                                <div class="toggle-switch-field col-1-3">
-                                    <div style="display: flex; flex-direction: column;">
-                                        <label for="new-instance-auto" class="toggle-field-label">Auto Trade</label>
-                                        <span class="toggle-field-subtext">No popup confirmation</span>
-                                    </div>
-                                    <label class="switch switch-sm">
-                                        <input type="checkbox" id="new-instance-auto">
-                                        <span class="slider round"></span>
-                                    </label>
-                                </div>
-                            </div>
-
-                            <button id="btn-add-instance" class="btn btn-primary-premium" style="margin-top: 6px;">Add
-                                Instance</button>
-                        </div>
-                    </div>
-                </div>
+                <!-- Panel 2: MT5 Instances moved to copier.html -->
             </div>
         </div>
     </div>

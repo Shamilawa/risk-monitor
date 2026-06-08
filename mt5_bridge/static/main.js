@@ -150,16 +150,16 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const status = JSON.parse(e.data);
             if (status.online) {
-                if(mt5StatusIcon) mt5StatusIcon.className = 'status-icon online';
+                if(mt5StatusIcon) mt5StatusIcon.className = 'led online';
             } else {
-                if(mt5StatusIcon) mt5StatusIcon.className = 'status-icon offline';
+                if(mt5StatusIcon) mt5StatusIcon.className = 'led offline';
             }
             if(mt5StatusText) mt5StatusText.innerText = status.text;
         } catch (err) {
             console.error("Failed to parse mt5_status:", err);
             // Fallback for old simple string if any
             const isOnline = e.data === 'true';
-            if(mt5StatusIcon) mt5StatusIcon.className = isOnline ? 'status-icon online' : 'status-icon offline';
+            if(mt5StatusIcon) mt5StatusIcon.className = isOnline ? 'led online' : 'led offline';
             if(mt5StatusText) mt5StatusText.innerText = isOnline ? 'MT5 Connected' : 'MT5 Offline';
         }
     });
@@ -649,7 +649,7 @@ document.addEventListener('DOMContentLoaded', () => {
         toggleDashBtn.addEventListener('click', () => {
             if (currentDashboard === 'monitoring') {
                 currentDashboard = 'review';
-                toggleDashBtn.innerText = '◀ Monitoring';
+                toggleDashBtn.innerText = 'Monitoring Mode';
                 toggleDashBtn.style.color = 'var(--text-main)';
                 toggleDashBtn.style.borderColor = 'var(--border-color)';
                 
@@ -663,9 +663,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 fetchStoryDates();
             } else {
                 currentDashboard = 'monitoring';
-                toggleDashBtn.innerText = 'Review Panel ➔';
-                toggleDashBtn.style.color = 'var(--color-active)';
-                toggleDashBtn.style.borderColor = 'var(--color-active)';
+                toggleDashBtn.innerText = 'Review Mode';
+                toggleDashBtn.style.color = 'var(--text-main)';
+                toggleDashBtn.style.borderColor = 'var(--border-color)';
                 
                 mainWorkspace.className = 'workspace workspace-monitoring';
                 document.querySelector('.pane-overview').style.display = 'flex';

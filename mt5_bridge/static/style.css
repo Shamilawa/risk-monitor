@@ -46,6 +46,195 @@ body {
     height: 100%;
 }
 
+/* Enterprise Terminal Header */
+.terminal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    height: 32px;
+    background-color: var(--bg-toolbar);
+    border-bottom: 1px solid var(--border-dark);
+    padding: 0 8px;
+    color: var(--text-main);
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.th-left, .th-center, .th-right {
+    display: flex;
+    align-items: center;
+    height: 100%;
+}
+
+.th-brand {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-right: 12px;
+    border-right: 1px solid var(--border-color);
+    height: 60%;
+}
+
+.th-logo {
+    display: none;
+}
+
+.th-brand strong {
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    color: var(--text-main);
+    font-weight: bold;
+}
+
+.th-nav {
+    display: flex;
+    gap: 8px;
+    padding-left: 12px;
+    height: 100%;
+    align-items: center;
+}
+
+.th-tabs {
+    display: flex;
+    height: 100%;
+    align-items: center;
+}
+
+.th-tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    height: 100%;
+    padding: 0 12px;
+    font-size: 11px;
+    font-family: inherit;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.1s;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.th-tab:hover {
+    color: var(--text-main);
+    background: var(--bg-row-hover);
+}
+
+.th-tab.active {
+    color: var(--color-active);
+    border-bottom: 2px solid var(--color-active);
+    background: var(--bg-panel);
+}
+
+.th-tab .arr {
+    font-size: 9px;
+}
+
+.th-divider {
+    width: 1px;
+    height: 16px;
+    background: var(--border-color);
+    margin: 0 4px;
+}
+
+.th-btn-ghost {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    height: 22px;
+    padding: 0 8px;
+    border-radius: 2px;
+    font-size: 10px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.1s;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.th-btn-ghost:hover {
+    color: var(--text-main);
+    background: var(--bg-row-hover);
+    border-color: var(--border-dark);
+}
+
+/* Ticker Component */
+.th-ticker {
+    display: flex;
+    align-items: center;
+    height: 24px;
+    padding: 0 6px;
+}
+
+.ticker-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 8px;
+}
+
+.ticker-divider {
+    width: 1px;
+    height: 12px;
+    background: var(--border-color);
+    margin: 0 4px;
+}
+
+.t-label {
+    font-size: 9px;
+    color: var(--text-muted);
+    font-weight: bold;
+    letter-spacing: 0.5px;
+}
+
+.t-value {
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 10px;
+    font-weight: bold;
+    color: var(--text-main);
+}
+
+.t-value.highlight {
+    color: var(--text-main);
+}
+
+/* Status Box */
+.th-status-box {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.led-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.led {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+}
+
+.led.online {
+    background: var(--color-buy);
+}
+
+.led.offline {
+    background: var(--color-sell);
+}
+
+.status-text {
+    font-size: 10px;
+    font-weight: bold;
+    color: var(--text-main);
+}
+
 /* Toolbar */
 .toolbar {
     background-color: var(--bg-toolbar);
