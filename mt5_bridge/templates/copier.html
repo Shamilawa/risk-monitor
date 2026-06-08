@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trade Copier</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .dense-card {
+            background: var(--bg-panel);
+            border: 1px solid var(--border-dark);
+            padding: 6px 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            font-size: 10px;
+        }
+        .dense-card:hover {
+            background: var(--bg-row-hover);
+        }
+        .dense-input {
+            background: var(--bg-toolbar);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            padding: 2px 4px;
+            font-size: 10px;
+            font-family: Consolas, monospace;
+            width: 100%;
+        }
+        .dense-input:focus {
+            border-color: var(--color-active);
+            outline: none;
+        }
+        .risk-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            background: var(--bg-app);
+            padding: 4px;
+            border: 1px solid var(--border-dark);
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Toolbar -->
+        <header class="toolbar" style="padding-left: 0; padding-bottom: 0;">
+            <div class="toolbar-left" style="display: flex; align-items: center; gap: 10px; height: 100%; padding-left: 8px;">
+                <strong style="font-size: 11px; letter-spacing: 0.5px; font-weight: bold; color: var(--text-main); margin-bottom: 4px; padding-right: 8px; border-right: 1px solid var(--border-color); height: 16px; display: flex; align-items: center;">VISUAL CONSOLE</strong>
+                <button class="btn-toolbar" style="margin-bottom: 4px;" onclick="window.location.href='/'">➔ Back to Dashboard</button>
+            </div>
+            <div class="toolbar-center" style="display: flex; align-items: center; gap: 15px; margin-bottom: 4px; font-size: 10px; color: var(--text-muted); font-family: Consolas, monospace;">
+                <div style="font-weight: bold; color: var(--color-active);">⚡ ZERO-LATENCY TRADE COPIER</div>
+            </div>
+            <div class="toolbar-right" style="margin-bottom: 4px; padding-right: 8px;">
+                <div class="status-indicator">
+                    <span id="copier-status-icon" class="status-icon online"></span>
+                    <span id="copier-status-text">Ready</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Workspace -->
+        <div class="workspace" style="display: grid; grid-template-columns: 350px 1fr; gap: 8px; padding: 8px;">
+            
+            <!-- Pane 1: Unassigned -->
+            <section class="pane">
+                <div class="pane-header">Available Instances</div>
+                <div class="pane-content" id="unassigned-list" style="display: flex; flex-direction: column; gap: 4px;"></div>
+            </section>
+
+            <!-- Pane 2 & 3: Master and Subs -->
+            <div style="display: grid; grid-template-rows: auto 1fr; gap: 8px;">
+                
+                <!-- Master Pane -->
+                <section class="pane" style="border-top: 2px solid #f39c12;">
+                    <div class="pane-header">
+                        <span style="color: #f39c12; font-weight: bold;">Master (Provider)</span>
+                        <span style="color: var(--text-muted);">Broadcasts trades instantly via ZMQ Port 5555</span>
+                    </div>
+                    <div class="pane-content" id="provider-list" style="display: flex; flex-direction: column; gap: 4px; min-height: 80px;"></div>
+                </section>
+                
+                <!-- Subs Pane -->
+                <section class="pane" style="border-top: 2px solid #3498db;">
+                    <div class="pane-header">
+                        <span style="color: #3498db; font-weight: bold;">Subs (Consumers)</span>
+                        <span style="color: var(--text-muted);">Listens on ZMQ Port 5556</span>
+                    </div>
+                    <div class="pane-content" id="consumer-list" style="display: flex; flex-direction: column; gap: 4px;"></div>
+                </section>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        async function loadCopierData() {
+            const res = await fetch('/api/copier_instances');
+            const data = await res.json();
+            
+            const unassignedList = document.getElementById('unassigned-list');
+            const providerList = document.getElementById('provider-list');
+            const consumerList = document.getElementById('consumer-list');
+            
+            unassignedList.innerHTML = '';
+            providerList.innerHTML = '';
+            consumerList.innerHTML = '';
+            
+            let hasProvider = data.some(d => d.copier_role === 'PROVIDER');
+            
+            data.forEach(inst => {
+                const card = document.createElement('div');
+                card.className = 'dense-card';
+                
+                let html = `
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <strong style="color: var(--text-main); font-size: 11px;">${inst.name}</strong>
+                        <select class="dense-input" style="width: 140px; border-color: ${inst.copier_role === 'PROVIDER' ? '#f39c12' : inst.copier_role === 'CONSUMER' ? '#3498db' : 'var(--border-color)'};" onchange="updateRole(${inst.id}, this.value)">
+                            <option value="NONE" ${inst.copier_role === 'NONE' ? 'selected' : ''}>Unassigned</option>
+                            <option value="PROVIDER" ${inst.copier_role === 'PROVIDER' ? 'selected' : ''} ${hasProvider && inst.copier_role !== 'PROVIDER' ? 'disabled' : ''}>Master (Provider)</option>
+                            <option value="CONSUMER" ${inst.copier_role === 'CONSUMER' ? 'selected' : ''}>Sub (Consumer)</option>
+                        </select>
+                    </div>
+                    <div style="color: var(--text-muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">${inst.path}</div>
+                `;
+                         
+                if (inst.copier_role === 'CONSUMER') {
+                    html += `
+                        <div class="risk-row">
+                            <div style="display:flex; flex-direction:column; gap:2px;">
+                                <label style="color: var(--text-muted);">Risk Type</label>
+                                <select class="dense-input" onchange="updateRisk(${inst.id}, 'type', this.value)">
+                                    <option value="FIXED" ${inst.copier_risk_type === 'FIXED' ? 'selected' : ''}>Fixed Lot</option>
+                                    <option value="USD" ${inst.copier_risk_type === 'USD' ? 'selected' : ''}>Dollar Risk ($)</option>
+                                    <option value="MULTIPLIER" ${inst.copier_risk_type === 'MULTIPLIER' ? 'selected' : ''}>Multiplier (x)</option>
+                                </select>
+                            </div>`;
+                            
+                    if (inst.copier_risk_type === 'FIXED') {
+                        html += `<div style="display:flex; flex-direction:column; gap:2px;">
+                                    <label style="color: var(--text-muted);">Lot Size</label>
+                                    <input type="number" step="0.01" class="dense-input" value="${inst.copier_fixed_lot}" onchange="updateRisk(${inst.id}, 'fixed', this.value)">
+                                 </div>`;
+                    } else if (inst.copier_risk_type === 'USD') {
+                        html += `<div style="display:flex; flex-direction:column; gap:2px;">
+                                    <label style="color: var(--text-muted);">Risk ($)</label>
+                                    <input type="number" class="dense-input" value="${inst.copier_risk_usd}" onchange="updateRisk(${inst.id}, 'usd', this.value)">
+                                 </div>`;
+                    } else if (inst.copier_risk_type === 'MULTIPLIER') {
+                        html += `<div style="display:flex; flex-direction:column; gap:2px;">
+                                    <label style="color: var(--text-muted);">Multiplier</label>
+                                    <input type="number" step="0.1" class="dense-input" value="${inst.copier_risk_multiplier}" onchange="updateRisk(${inst.id}, 'mult', this.value)">
+                                 </div>`;
+                    }
+                    html += `</div>`;
+                }
+                
+                card.innerHTML = html;
+                
+                if (inst.copier_role === 'PROVIDER') providerList.appendChild(card);
+                else if (inst.copier_role === 'CONSUMER') consumerList.appendChild(card);
+                else unassignedList.appendChild(card);
+            });
+            
+            if (providerList.children.length === 0) providerList.innerHTML = '<div style="color: var(--text-muted); font-style: italic; padding: 4px;">No Master assigned.</div>';
+            if (consumerList.children.length === 0) consumerList.innerHTML = '<div style="color: var(--text-muted); font-style: italic; padding: 4px;">No Subs assigned.</div>';
+            if (unassignedList.children.length === 0) unassignedList.innerHTML = '<div style="color: var(--text-muted); font-style: italic; padding: 4px;">All instances assigned.</div>';
+        }
+
+        async function updateRole(id, role) {
+            await fetch('/api/copier_instances/update', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({id: id, copier_role: role})
+            });
+            loadCopierData();
+        }
+        
+        async function updateRisk(id, field, value) {
+            const res = await fetch('/api/copier_instances');
+            const data = await res.json();
+            const inst = data.find(d => d.id === id);
+            
+            let payload = {
+                id: id,
+                copier_role: inst.copier_role,
+                copier_risk_type: inst.copier_risk_type,
+                copier_fixed_lot: inst.copier_fixed_lot,
+                copier_risk_usd: inst.copier_risk_usd,
+                copier_risk_multiplier: inst.copier_risk_multiplier
+            };
+            
+            if (field === 'type') payload.copier_risk_type = value;
+            else if (field === 'fixed') payload.copier_fixed_lot = parseFloat(value);
+            else if (field === 'usd') payload.copier_risk_usd = parseFloat(value);
+            else if (field === 'mult') payload.copier_risk_multiplier = parseFloat(value);
+            
+            await fetch('/api/copier_instances/update', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+            loadCopierData();
+        }
+
+        document.addEventListener("DOMContentLoaded", loadCopierData);
+    </script>
+</body>
+</html>

@@ -156,6 +156,22 @@ def init_db():
         c.execute("ALTER TABLE instances ADD COLUMN profit_limit_start_time INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+        
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN copier_role TEXT DEFAULT 'NONE'")
+    except sqlite3.OperationalError: pass
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN copier_risk_type TEXT DEFAULT 'FIXED'")
+    except sqlite3.OperationalError: pass
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN copier_fixed_lot REAL DEFAULT 0.01")
+    except sqlite3.OperationalError: pass
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN copier_risk_usd REAL DEFAULT 100.0")
+    except sqlite3.OperationalError: pass
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN copier_risk_multiplier REAL DEFAULT 1.0")
+    except sqlite3.OperationalError: pass
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS trading_log (
@@ -475,6 +491,10 @@ def reconcile_on_boot():
 def index():
     return render_template('index.html')
 
+@flask_app.route('/copier')
+def copier_page():
+    return render_template('copier.html')
+
 @flask_app.route('/api/stream')
 def stream():
     q = queue.Queue()
@@ -637,6 +657,56 @@ def api_instances():
         conn.commit()
         conn.close()
         return jsonify({"status": "success"})
+
+@flask_app.route('/api/copier_instances', methods=['GET'])
+def api_copier_instances():
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    try:
+        c.execute("SELECT id, name, path, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier FROM instances ORDER BY id ASC")
+        rows = c.fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    
+    instances = []
+    for r in rows:
+        instances.append({
+            "id": r[0], "name": r[1], "path": r[2], 
+            "copier_role": r[3], "copier_risk_type": r[4], 
+            "copier_fixed_lot": r[5], "copier_risk_usd": r[6], "copier_risk_multiplier": r[7]
+        })
+    conn.close()
+    return jsonify(instances)
+
+@flask_app.route('/api/copier_instances/update', methods=['POST'])
+def api_copier_instances_update():
+    data = request.json
+    instance_id = data.get('id')
+    copier_role = data.get('copier_role', 'NONE')
+    copier_risk_type = data.get('copier_risk_type', 'FIXED')
+    copier_fixed_lot = float(data.get('copier_fixed_lot', 0.01))
+    copier_risk_usd = float(data.get('copier_risk_usd', 100.0))
+    copier_risk_multiplier = float(data.get('copier_risk_multiplier', 1.0))
+    
+    if not instance_id:
+        return jsonify({"error": "ID required"}), 400
+        
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    
+    if copier_role == 'PROVIDER':
+        c.execute("UPDATE instances SET copier_role = 'NONE' WHERE copier_role = 'PROVIDER'")
+        
+    try:
+        c.execute("UPDATE instances SET copier_role=?, copier_risk_type=?, copier_fixed_lot=?, copier_risk_usd=?, copier_risk_multiplier=? WHERE id=?", 
+                  (copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, instance_id))
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 500
+        
+    conn.close()
+    return jsonify({"status": "success"})
 
 @flask_app.route('/api/instances/reset_profit', methods=['POST'])
 def api_instances_reset_profit():
@@ -1544,12 +1614,82 @@ def api_backtest_trades():
         conn.close()
         return jsonify({"error": "No ID provided"}), 400
 
+import zmq
+
+def zmq_router_thread():
+    context = zmq.Context()
+    pull_socket = context.socket(zmq.PULL)
+    pull_socket.bind("tcp://127.0.0.1:5555")
+    
+    pub_socket = context.socket(zmq.PUB)
+    pub_socket.bind("tcp://127.0.0.1:5556")
+    
+    logging.info("[ZMQ ROUTER] Active and bridging Provider -> Consumers on 5555/5556")
+    while True:
+        try:
+            msg = pull_socket.recv_json()
+            logging.info(f"[ZMQ ROUTER] Routing Trade: {msg}")
+            pub_socket.send_json(msg)
+        except Exception as e:
+            logging.error(f"ZMQ Router error: {e}")
+
+copier_workers = {}
+
+def copier_manager_thread():
+    import sys
+    while True:
+        try:
+            conn = sqlite3.connect('trades.db')
+            c = conn.cursor()
+            try:
+                c.execute("SELECT id, path, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier FROM instances WHERE copier_role IN ('PROVIDER', 'CONSUMER')")
+                active_copiers = c.fetchall()
+            except sqlite3.OperationalError:
+                active_copiers = []
+            conn.close()
+            
+            desired = {r[0]: r for r in active_copiers}
+            
+            to_remove = []
+            for cid, w in copier_workers.items():
+                if cid not in desired or w['config'] != desired[cid] or w['process'].poll() is not None:
+                    try:
+                        w['process'].terminate()
+                    except: pass
+                    to_remove.append(cid)
+            
+            for cid in to_remove:
+                del copier_workers[cid]
+                
+            for cid, r in desired.items():
+                if cid not in copier_workers:
+                    cmd = [
+                        sys.executable, 'mt5_worker.py',
+                        '--id', str(r[0]),
+                        '--path', str(r[1]),
+                        '--role', str(r[2]),
+                        '--risk_type', str(r[3]),
+                        '--fixed_lot', str(r[4]),
+                        '--risk_usd', str(r[5]),
+                        '--risk_mult', str(r[6])
+                    ]
+                    p = subprocess.Popen(cmd)
+                    copier_workers[cid] = {'process': p, 'config': r}
+                    logging.info(f"Started MT5 Copier Worker [{r[2]}] for Instance {cid}")
+                    
+        except Exception as e:
+            logging.error(f"Copier manager error: {e}")
+            
+        time.sleep(3)
+
 def main():
     logging.info("Starting Premium MT5 Bridge Server...")
     
     # DB Reconcile and Poller
     reconcile_on_boot()
     threading.Thread(target=poller_thread, daemon=True).start()
+    threading.Thread(target=zmq_router_thread, daemon=True).start()
+    threading.Thread(target=copier_manager_thread, daemon=True).start()
     
     # Setup Ngrok
     
