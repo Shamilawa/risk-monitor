@@ -350,7 +350,15 @@ def execute_trade(symbol, action_type, sl, tp, volume, entry_price, instance_pat
             logging.error(f"Error Description: {result.comment}")
             return None
             
-        logging.info(f"Trade Executed Successfully! Ticket: {result.order}")
+        msg = f"✅ Trade Executed Successfully!\nSymbol: {actual_symbol}\nAction: {action_type.upper()}\nVolume: {volume}\nTicket: {result.order}\nPrice: {price}"
+        
+        def notify_async():
+            logging.info(msg)
+            notify_clients("trade_sound", "play")
+            send_telegram_message(msg)
+            
+        threading.Thread(target=notify_async).start()
+        
         return result.order
 
 def fetch_instance_data(inst):

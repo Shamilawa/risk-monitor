@@ -140,6 +140,11 @@ document.addEventListener('DOMContentLoaded', () => {
     eventSource.addEventListener('log', (e) => { appendLog(e.data); });
     eventSource.addEventListener('ngrok_url', (e) => { webhookInput.value = e.data; });
     eventSource.addEventListener('tracker_update', (e) => { fetchTracker(); });
+    
+    eventSource.addEventListener('trade_sound', (e) => {
+        alertAudio.currentTime = 0;
+        alertAudio.play().catch(e => console.error("Error playing sound:", e));
+    });
 
     eventSource.addEventListener('mt5_status', (e) => {
         try {
