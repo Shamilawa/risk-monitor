@@ -12,20 +12,40 @@ except ImportError:
 
 def provider_loop(push_socket):
     print("[PROVIDER] Starting polling loop...")
-    # Get current time to ignore old deals
-    # Subtracting 1 second just to be safe on bounds
-    last_deal_time = datetime.now() - timedelta(seconds=1)
+    
+    # Initialize last_deal_time using integer timestamp to completely bypass datetime timezone drift bugs
+    deals = mt5.history_deals_get(0, 2147483647)
+    if deals:
+        deals = sorted(deals, key=lambda x: x.time)
+        last_deal_time = deals[-1].time
+    else:
+        # Fallback to current broker time if account has 0 history deals
+        last_deal_time = 0
+        symbols = mt5.symbols_get()
+        if symbols:
+            for s in symbols:
+                if s.visible:
+                    tick = mt5.symbol_info_tick(s.name)
+                    if tick and tick.time > 0:
+                        last_deal_time = tick.time
+                        break
+                        
     seen_tickets = set()
     
     while True:
-        # Polling history deals
-        now = datetime.now() + timedelta(seconds=1)
-        deals = mt5.history_deals_get(last_deal_time, now)
+        # Polling using integers (broker time posix timestamps) is 100% robust
+        current_deals = mt5.history_deals_get(last_deal_time, 2147483647)
         
-        if deals:
-            for deal in deals:
+        if current_deals:
+            # Sort deals by time to process in order
+            current_deals = sorted(current_deals, key=lambda x: x.time)
+            for deal in current_deals:
                 if deal.ticket not in seen_tickets:
                     seen_tickets.add(deal.ticket)
+                    
+                    if deal.time > last_deal_time:
+                        last_deal_time = deal.time
+                        
                     # We only care about new position entries
                     if deal.entry == mt5.DEAL_ENTRY_IN:
                         # Fetch the active position to get the SL and TP 
@@ -46,12 +66,6 @@ def provider_loop(push_socket):
                         }
                         push_socket.send_json(payload)
                         print(f"[PROVIDER] Detected & Routed Trade: {payload['action']} {payload['symbol']} (Vol: {payload['volume']})")
-                        
-                        # Update last deal time so we don't query huge histories
-                        # mt5 times are in posix timestamp (seconds)
-                        dt = datetime.fromtimestamp(deal.time)
-                        if dt > last_deal_time:
-                            last_deal_time = dt
         
         # 10ms sleep for ultra-low latency without 100% CPU lock
         time.sleep(0.01)
@@ -82,7 +96,16 @@ def execute_trade(action, symbol, volume, sl, tp):
     
     result = mt5.order_send(request)
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        print(f"[CONSUMER] Order failed: {result.comment}")
+        # Retry with FOK
+        request["type_filling"] = mt5.ORDER_FILLING_FOK
+        result = mt5.order_send(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            # Retry with RETURN
+            request["type_filling"] = mt5.ORDER_FILLING_RETURN
+            result = mt5.order_send(request)
+
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        print(f"[CONSUMER] Order failed: {result.comment} (Retcode: {result.retcode})")
     else:
         print(f"[CONSUMER] Order executed successfully: Ticket {result.order}")
 
@@ -95,6 +118,19 @@ def consumer_loop(sub_socket, args):
                 print(f"[CONSUMER] Received Signal: {msg}")
                 
                 symbol = msg["symbol"]
+                
+                # Apply symbol mapping
+                mapping = {}
+                try:
+                    if hasattr(args, 'symbol_mapping') and args.symbol_mapping:
+                        mapping = json.loads(args.symbol_mapping)
+                except Exception as e:
+                    print(f"[CONSUMER] Error parsing symbol mapping: {e}")
+                
+                if symbol in mapping:
+                    print(f"[CONSUMER] Mapping symbol {symbol} -> {mapping[symbol]}")
+                    symbol = mapping[symbol]
+                    
                 action = msg["action"]
                 provider_volume = msg["volume"]
                 provider_price = msg["price"]
@@ -139,6 +175,7 @@ if __name__ == "__main__":
     parser.add_argument("--fixed_lot", type=float, default=0.01)
     parser.add_argument("--risk_usd", type=float, default=100.0)
     parser.add_argument("--risk_mult", type=float, default=1.0)
+    parser.add_argument("--symbol_mapping", type=str, default='{}')
     
     args = parser.parse_args()
     

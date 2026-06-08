@@ -1894,7 +1894,6 @@ function renderHealthCards(instances) {
         
         if (inst.copier_role === 'PROVIDER') {
             roleBadge = `<span class="badge-dense" style="background: rgba(243, 156, 18, 0.15); color: #f39c12; margin-left: 5px; font-size: 9px; vertical-align: middle;">👑 MASTER</span><span class="badge-dense" style="background: rgba(46, 204, 113, 0.15); color: #2ecc71; margin-left: 5px; font-size: 8px; vertical-align: middle;"><span style="display:inline-block; width:6px; height:6px; background:#2ecc71; border-radius:50%; margin-right:3px;"></span>ZMQ</span>`;
-            headerStyle = 'border-top: 2px solid #f39c12;';
             const masterContainer = document.getElementById('master-cards-container');
             if (masterContainer) targetContainer = masterContainer;
             flexStyle = 'width: 260px; flex-shrink: 0;';
@@ -1936,7 +1935,6 @@ function renderHealthCards(instances) {
             card.id = `health-card-${inst.id}`;
             card.className = cardClass;
             card.style = `padding: 0; margin-bottom: 0; ${flexStyle}`;
-            if (inst.copier_role === 'PROVIDER') card.style.boxShadow = "0 0 8px rgba(243, 156, 18, 0.2)";
             
             card.innerHTML = `
                 <div class="card-header" style="${headerStyle}">
@@ -2166,12 +2164,18 @@ function renderActivePositions(instances) {
             prevInstProfits[inst.id] = instProfit;
             const profColor = instProfit >= 0 ? 'var(--color-buy)' : 'var(--color-sell)';
             const instProfitStr = instProfit.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            let roleBadge = '';
+            if (inst.copier_role === 'PROVIDER') {
+                roleBadge = `<span class="badge-dense" style="background: rgba(243, 156, 18, 0.15); color: #f39c12; margin-left: 5px; font-size: 9px; vertical-align: middle;">👑 MASTER</span>`;
+            } else if (inst.copier_role === 'CONSUMER') {
+                roleBadge = `<span class="badge-dense" style="background: rgba(52, 152, 219, 0.15); color: #3498db; margin-left: 5px; font-size: 9px; vertical-align: middle;">👥 SUB</span>`;
+            }
             
             html += `
                 <tr class="tree-header tree-toggle" style="cursor: pointer;" onclick="toggleActivePos('${nodeId}')">
                     <td colspan="8" style="padding: 4px 8px;">
                         <span class="toggle-icon ${isExpanded ? '' : 'collapsed'}">▼</span>
-                        <strong>${inst.name}</strong> 
+                        <strong>${inst.name}</strong>${roleBadge}
                         <span style="font-size: 9px; color: var(--text-muted); margin-left: 10px;" id="inst-count-${inst.id}">${inst.positions.length} Trades</span>
                         <span style="float: right; color: ${profColor}; font-weight: bold;" id="inst-profit-${inst.id}">$${instProfitStr}</span>
                     </td>

@@ -336,6 +336,15 @@ def execute_trade(symbol, action_type, sl, tp, volume, entry_price, instance_pat
             request["type_filling"] = mt5.ORDER_FILLING_IOC
             
         result = mt5.order_send(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE and not is_pending:
+            # Retry with FOK
+            request["type_filling"] = mt5.ORDER_FILLING_FOK
+            result = mt5.order_send(request)
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                # Retry with RETURN
+                request["type_filling"] = mt5.ORDER_FILLING_RETURN
+                result = mt5.order_send(request)
+
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             logging.error(f"Order failed, retcode={result.retcode}")
             logging.error(f"Error Description: {result.comment}")
@@ -1713,7 +1722,7 @@ def copier_manager_thread():
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
             try:
-                c.execute("SELECT id, path, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier FROM instances WHERE copier_role IN ('PROVIDER', 'CONSUMER')")
+                c.execute("SELECT id, path, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, symbol_mapping FROM instances WHERE copier_role IN ('PROVIDER', 'CONSUMER')")
                 active_copiers = c.fetchall()
             except sqlite3.OperationalError:
                 active_copiers = []
@@ -1742,7 +1751,8 @@ def copier_manager_thread():
                         '--risk_type', str(r[3]),
                         '--fixed_lot', str(r[4]),
                         '--risk_usd', str(r[5]),
-                        '--risk_mult', str(r[6])
+                        '--risk_mult', str(r[6]),
+                        '--symbol_mapping', str(r[7] if len(r) > 7 and r[7] else '{}')
                     ]
                     p = subprocess.Popen(cmd)
                     copier_workers[cid] = {'process': p, 'config': r}
