@@ -570,6 +570,19 @@ def index():
 def copier_page():
     return render_template('copier.html')
 
+@flask_app.route('/api/internal_notify', methods=['POST'])
+def internal_notify():
+    msg = request.form.get('msg', 'Copier Trade Executed')
+    
+    def _notify():
+        logging.info(msg)
+        notify_clients("trade_sound", "play")
+        send_telegram_message(msg)
+        
+    threading.Thread(target=_notify).start()
+    return "ok"
+
+
 @flask_app.route('/api/stream')
 def stream():
     q = queue.Queue()

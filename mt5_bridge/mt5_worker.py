@@ -157,6 +157,20 @@ def execute_trade(action, symbol, volume, sl, tp):
         return None
     else:
         print(f"[CONSUMER] Order executed successfully: Ticket {result.order}")
+        
+        def notify_ui():
+            try:
+                import urllib.request
+                import urllib.parse
+                data = urllib.parse.urlencode({"msg": f"✅ Copier Trade Executed!\nSymbol: {symbol}\nAction: {action.upper()}\nVolume: {volume}\nTicket: {result.order}"}).encode()
+                req = urllib.request.Request("http://127.0.0.1:5000/api/internal_notify", data=data)
+                urllib.request.urlopen(req, timeout=2)
+            except Exception as e:
+                pass
+                
+        import threading
+        threading.Thread(target=notify_ui).start()
+        
         return result.order
 
 def close_trade(ticket, volume):
