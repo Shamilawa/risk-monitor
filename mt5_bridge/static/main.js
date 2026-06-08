@@ -1193,12 +1193,32 @@ document.addEventListener('DOMContentLoaded', () => {
                         `;
                     }
 
+                    let roleBadge = '';
+                    let cardStyle = 'display: flex; justify-content: space-between; align-items: center; padding: 8px; background: var(--bg-secondary); border: 1px solid var(--border-color); margin-bottom: 5px;';
+                    
+                    if (inst.copier_role === 'PROVIDER') {
+                        roleBadge = `<span class="badge-dense" style="background: rgba(243, 156, 18, 0.15); color: #f39c12; margin-left: 5px; font-size: 9px; vertical-align: middle;">👑 MASTER</span><span class="badge-dense" style="background: rgba(46, 204, 113, 0.15); color: #2ecc71; margin-left: 5px; font-size: 8px; vertical-align: middle;"><span style="display:inline-block; width:6px; height:6px; background:#2ecc71; border-radius:50%; margin-right:3px;"></span>ZMQ: Broadcasting</span>`;
+                        cardStyle = 'display: flex; justify-content: space-between; align-items: center; padding: 8px; background: var(--bg-secondary); border: 1px solid #f39c12; box-shadow: 0 0 10px rgba(243, 156, 18, 0.1); margin-bottom: 5px;';
+                    } else if (inst.copier_role === 'CONSUMER') {
+                        roleBadge = `<span class="badge-dense" style="background: rgba(52, 152, 219, 0.15); color: #3498db; margin-left: 5px; font-size: 9px; vertical-align: middle;">👥 SUB</span>`;
+                    }
+
+                    let copierInfoHtml = '';
+                    if (inst.copier_role === 'CONSUMER') {
+                        let riskStr = '';
+                        if (inst.copier_risk_type === 'FIXED') riskStr = `Fixed ${inst.copier_fixed_lot} Lots`;
+                        else if (inst.copier_risk_type === 'MULTIPLIER') riskStr = `${inst.copier_risk_multiplier}x Multiplier`;
+                        else if (inst.copier_risk_type === 'USD') riskStr = `$${inst.copier_risk_usd} USD`;
+                        copierInfoHtml = `<div style="margin-top: 4px; font-size: 10px; color: var(--text-muted);"><span style="color: #3498db; font-weight: bold;">Copier Risk:</span> ${riskStr}</div>`;
+                    }
+
                     const div = document.createElement('div');
-                    div.style = 'display: flex; justify-content: space-between; align-items: center; padding: 8px; background: var(--bg-secondary); border: 1px solid var(--border-color); margin-bottom: 5px;';
+                    div.style = cardStyle;
                     div.innerHTML = `
                         <div style="flex: 1;">
-                            <strong>${inst.name}</strong> ${autoModeBadge} <span style="font-size: 11px; color: #10b981; margin-left: 5px;">$${inst.risk_usd || 100} Risk</span> ${inst.symbol_suffix ? `<span style="font-size: 11px; color: #64b5f6; margin-left: 5px;">(${inst.symbol_suffix} Suffix)</span>` : ''}<br>
+                            <strong>${inst.name}</strong> ${roleBadge} ${autoModeBadge} <span style="font-size: 11px; color: #10b981; margin-left: 5px;">$${inst.risk_usd || 100} Risk</span> ${inst.symbol_suffix ? `<span style="font-size: 11px; color: #64b5f6; margin-left: 5px;">(${inst.symbol_suffix} Suffix)</span>` : ''}<br>
                             <span style="font-size: 10px; color: var(--text-muted);">${inst.path}</span>
+                            ${copierInfoHtml}
                             ${profitLimitHtml}
                         </div>
                         <div style="display: flex; gap: 5px;">
@@ -1822,6 +1842,15 @@ eventSource.addEventListener('risk_data', (e) => {
 
 const equityCharts = {};
 const prevCardPnls = {};
+const cardTimeframes = {};
+
+function formatGain(val) {
+    if (val === undefined || val === null) val = 0;
+    const sign = val > 0 ? '+' : (val < 0 ? '-' : '');
+    const absVal = Math.abs(val).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const color = val > 0 ? 'var(--color-buy)' : (val < 0 ? 'var(--color-sell)' : 'var(--text-secondary)');
+    return { text: `${sign}$${absVal}`, color: color };
+}
 
 function renderHealthCards(instances) {
     const grid = document.getElementById('health-cards-grid');
@@ -1858,16 +1887,60 @@ function renderHealthCards(instances) {
             cardClass += " in-drawdown";
         }
 
+        let roleBadge = '';
+        let headerStyle = '';
+        let targetContainer = grid;
+        let flexStyle = ''; // For cards in flex containers
+        
+        if (inst.copier_role === 'PROVIDER') {
+            roleBadge = `<span class="badge-dense" style="background: rgba(243, 156, 18, 0.15); color: #f39c12; margin-left: 5px; font-size: 9px; vertical-align: middle;">👑 MASTER</span><span class="badge-dense" style="background: rgba(46, 204, 113, 0.15); color: #2ecc71; margin-left: 5px; font-size: 8px; vertical-align: middle;"><span style="display:inline-block; width:6px; height:6px; background:#2ecc71; border-radius:50%; margin-right:3px;"></span>ZMQ</span>`;
+            headerStyle = 'border-top: 2px solid #f39c12;';
+            const masterContainer = document.getElementById('master-cards-container');
+            if (masterContainer) targetContainer = masterContainer;
+            flexStyle = 'width: 260px; flex-shrink: 0;';
+        } else if (inst.copier_role === 'CONSUMER') {
+            roleBadge = `<span class="badge-dense" style="background: rgba(52, 152, 219, 0.15); color: #3498db; margin-left: 5px; font-size: 9px; vertical-align: middle;">👥 SUB</span>`;
+            const subContainer = document.getElementById('sub-cards-container');
+            if (subContainer) targetContainer = subContainer;
+            flexStyle = 'width: 220px; flex-shrink: 0;';
+        }
+
+        let copierInfoHtml = '';
+        if (inst.copier_role === 'CONSUMER') {
+            let riskStr = '';
+            if (inst.copier_risk_type === 'FIXED') riskStr = `Fixed ${inst.copier_fixed_lot} Lots`;
+            else if (inst.copier_risk_type === 'MULTIPLIER') riskStr = `${inst.copier_risk_multiplier}x Multi`;
+            else if (inst.copier_risk_type === 'USD') riskStr = `$${inst.copier_risk_usd} USD`;
+            copierInfoHtml = `<div style="display: flex; justify-content: space-between; align-items: center; margin-top: 2px;"><span style="color: #3498db; font-size: 10px; font-weight: bold;">Copier Risk</span><strong style="font-size: 10px; color: var(--text-secondary);">${riskStr}</strong></div>`;
+        }
+        
+        let selectedPeriod = cardTimeframes[inst.id] || 'today';
+        let realizedGainVal = (inst.realized_gains && inst.realized_gains[selectedPeriod]) ? inst.realized_gains[selectedPeriod] : 0.0;
+        let gainFmt = formatGain(realizedGainVal);
+        let realizedGainHtml = `
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border-color);">
+                <select id="card-rg-sel-${inst.id}" class="rg-select" data-id="${inst.id}" style="font-size: 9px; padding: 2px; background: var(--bg-panel); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 3px; outline: none; cursor: pointer;">
+                    <option value="today" ${selectedPeriod === 'today' ? 'selected' : ''}>Realized (Today)</option>
+                    <option value="yesterday" ${selectedPeriod === 'yesterday' ? 'selected' : ''}>Realized (Yest.)</option>
+                    <option value="week" ${selectedPeriod === 'week' ? 'selected' : ''}>Realized (Week)</option>
+                    <option value="last_week" ${selectedPeriod === 'last_week' ? 'selected' : ''}>Realized (L.Week)</option>
+                    <option value="month" ${selectedPeriod === 'month' ? 'selected' : ''}>Realized (Month)</option>
+                </select>
+                <strong id="card-rg-val-${inst.id}" style="font-size: 10.5px; color: ${gainFmt.color};">${gainFmt.text}</strong>
+            </div>
+        `;
+
         let card = document.getElementById(`health-card-${inst.id}`);
         if (!card) {
             card = document.createElement('div');
             card.id = `health-card-${inst.id}`;
             card.className = cardClass;
-            card.style = "padding: 0; margin-bottom: 0;";
+            card.style = `padding: 0; margin-bottom: 0; ${flexStyle}`;
+            if (inst.copier_role === 'PROVIDER') card.style.boxShadow = "0 0 8px rgba(243, 156, 18, 0.2)";
             
             card.innerHTML = `
-                <div class="card-header">
-                    <strong>${inst.name}</strong>
+                <div class="card-header" style="${headerStyle}">
+                    <div style="display:flex; align-items:center;"><strong>${inst.name}</strong> ${roleBadge}</div>
                     <button class="btn-toolbar btn-close-all" style="display: none;" data-id="${inst.id}">Close All</button>
                 </div>
                 
@@ -1891,11 +1964,27 @@ function renderHealthCards(instances) {
                         <span style="color: var(--text-secondary); font-size: 10px;">P&L</span>
                         <strong id="card-dd-${inst.id}" style="font-size: 10.5px; color: ${pnlColor}; white-space: nowrap;">${pnlStr}</strong>
                     </div>
+                    
+                    ${copierInfoHtml}
+                    ${realizedGainHtml}
                 </div>
             `;
-            grid.appendChild(card);
+            targetContainer.appendChild(card);
+            
+            const selEl = document.getElementById(`card-rg-sel-${inst.id}`);
+            if (selEl) {
+                selEl.addEventListener('change', function(e) {
+                    cardTimeframes[e.target.dataset.id] = e.target.value;
+                });
+            }
+            
             prevCardPnls[inst.id] = floatingPnl;
         } else {
+            // Re-assign to target container in case the role was changed dynamically
+            if (card.parentNode !== targetContainer && targetContainer) {
+                targetContainer.appendChild(card);
+            }
+            
             if (floatingPnl > 0) {
                 card.classList.add('in-profit');
                 card.classList.remove('in-drawdown');
@@ -1934,6 +2023,15 @@ function renderHealthCards(instances) {
                     ddEl.classList.add('flash-down');
                 }
             }
+            
+            const rgValEl = document.getElementById(`card-rg-val-${inst.id}`);
+            if (rgValEl) {
+                let selectedPeriod = cardTimeframes[inst.id] || 'today';
+                let realizedGainVal = (inst.realized_gains && inst.realized_gains[selectedPeriod]) ? inst.realized_gains[selectedPeriod] : 0.0;
+                let gainFmt = formatGain(realizedGainVal);
+                rgValEl.innerText = gainFmt.text;
+                rgValEl.style.color = gainFmt.color;
+            }
         }
     });
 
@@ -1969,7 +2067,65 @@ function renderHealthCards(instances) {
         const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
         dateEl.innerText = new Date().toLocaleDateString('en-US', options).toUpperCase();
     }
+    
+    updateFlowLines(instances);
 }
+
+let flowLines = {};
+function updateFlowLines(instances) {
+    if (typeof LeaderLine === 'undefined') return;
+
+    const masters = instances.filter(i => i.copier_role === 'PROVIDER');
+    const subs = instances.filter(i => i.copier_role === 'CONSUMER');
+
+    const validKeys = new Set();
+
+    if (masters.length > 0 && subs.length > 0) {
+        const masterCard = document.getElementById(`health-card-${masters[0].id}`);
+        
+        if (masterCard) {
+            subs.forEach(sub => {
+                const subCard = document.getElementById(`health-card-${sub.id}`);
+                if (subCard) {
+                    const lineKey = `${masters[0].id}-${sub.id}`;
+                    validKeys.add(lineKey);
+
+                    if (!flowLines[lineKey]) {
+                        flowLines[lineKey] = new LeaderLine(
+                            masterCard,
+                            subCard,
+                            {
+                                color: 'rgba(52, 152, 219, 0.4)',
+                                size: 2,
+                                path: 'fluid',
+                                startSocket: 'bottom',
+                                endSocket: 'top',
+                                dropShadow: true,
+                                dash: {animation: true}
+                            }
+                        );
+                    } else {
+                        try { flowLines[lineKey].position(); } catch(e) {}
+                    }
+                }
+            });
+        }
+    }
+
+    for (const key in flowLines) {
+        if (!validKeys.has(key)) {
+            try { flowLines[key].remove(); } catch(e) {}
+            delete flowLines[key];
+        }
+    }
+}
+
+window.addEventListener('resize', () => {
+    for (const key in flowLines) {
+        try { flowLines[key].position(); } catch(e) {}
+    }
+});
+
 const activePosExpanded = {};
 const prevProfits = {};
 const prevInstProfits = {};
@@ -2142,3 +2298,17 @@ window.toggleActivePos = function(nodeId) {
         renderActivePositions(window.lastRiskData);
     }
 };
+
+window.toggleActivePositions = function() {
+    const pane = document.getElementById('pane-active-positions');
+    const icon = document.getElementById('active-positions-toggle-icon');
+    if (pane && icon) {
+        if (pane.classList.contains('collapsed')) {
+            pane.classList.remove('collapsed');
+            icon.innerText = '▼';
+        } else {
+            pane.classList.add('collapsed');
+            icon.innerText = '▶';
+        }
+    }
+};

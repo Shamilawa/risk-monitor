@@ -188,6 +188,15 @@ body {
     align-items: center;
 }
 
+/* Collapsible Pane Styles */
+.pane-positions.collapsed .pane-content {
+    display: none !important;
+}
+
+.workspace.workspace-monitoring:has(.pane-positions.collapsed) {
+    grid-template-rows: 1fr auto;
+}
+
 .pane-content {
     flex-grow: 1;
     overflow-y: auto;
@@ -1342,4 +1351,10 @@ input:checked + .slider:before {
 
 .flash-down {
     animation: flash-red 0.8s ease-out;
+}
+
+/* Dropdown Option Styling */
+.rg-select option {
+    background-color: var(--bg-panel);
+    color: var(--text-main);
 }

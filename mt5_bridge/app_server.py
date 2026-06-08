@@ -14,7 +14,7 @@ import random
 import time
 import webbrowser
 import concurrent.futures
-from datetime import datetime
+from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -24,6 +24,7 @@ global_mt5_status = '{"online": false, "text": "Checking..."}'
 
 recent_logs = []
 global_was_time_disabled = False
+mt5_history_cache = {}
 
 MAX_RECENT_LOGS = 100
 
@@ -344,7 +345,18 @@ def execute_trade(symbol, action_type, sl, tp, volume, entry_price, instance_pat
         return result.order
 
 def fetch_instance_data(inst):
-    inst_id, inst_name, inst_path, symbol_suffix, group_name = inst
+    inst_id = inst[0]
+    inst_name = inst[1]
+    inst_path = inst[2]
+    symbol_suffix = inst[3]
+    group_name = inst[4]
+    
+    copier_role = inst[5] if len(inst) > 5 else 'NONE'
+    copier_risk_type = inst[6] if len(inst) > 6 else 'FIXED'
+    copier_fixed_lot = inst[7] if len(inst) > 7 else 0.01
+    copier_risk_usd = inst[8] if len(inst) > 8 else 100.0
+    copier_risk_multiplier = inst[9] if len(inst) > 9 else 1.0
+
     try:
         with mt5_lock:
             if not mt5.initialize(path=inst_path):
@@ -362,6 +374,11 @@ def fetch_instance_data(inst):
                 "margin_level": 0,
                 "total_risk_usd": 0,
                 "drawdown_pct": 0,
+                "copier_role": copier_role,
+                "copier_risk_type": copier_risk_type,
+                "copier_fixed_lot": copier_fixed_lot,
+                "copier_risk_usd": copier_risk_usd,
+                "copier_risk_multiplier": copier_risk_multiplier,
                 "positions": [],
                 "historical_equity": {"labels": [], "data": []}
             }
@@ -408,6 +425,44 @@ def fetch_instance_data(inst):
                         "risk_usd": risk_usd,
                         "dist_sl": dist_sl
                     })
+                    
+            current_time = time.time()
+            if inst_id not in mt5_history_cache or (current_time - mt5_history_cache[inst_id]["timestamp"] > 60):
+                now_dt = datetime.now()
+                today_start_dt = datetime(now_dt.year, now_dt.month, now_dt.day)
+                yesterday_start_dt = today_start_dt - timedelta(days=1)
+                this_week_start_dt = today_start_dt - timedelta(days=now_dt.weekday())
+                last_week_start_dt = this_week_start_dt - timedelta(days=7)
+                this_month_start_dt = datetime(now_dt.year, now_dt.month, 1)
+
+                min_date = min(yesterday_start_dt, last_week_start_dt, this_month_start_dt)
+                
+                deals = mt5.history_deals_get(min_date, now_dt)
+                gains = {"today": 0.0, "yesterday": 0.0, "week": 0.0, "last_week": 0.0, "month": 0.0}
+                
+                if deals:
+                    for d in deals:
+                        if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL):
+                            deal_time = datetime.fromtimestamp(d.time)
+                            profit = d.profit + d.commission + d.swap
+                            
+                            if deal_time >= today_start_dt:
+                                gains["today"] += profit
+                            elif deal_time >= yesterday_start_dt and deal_time < today_start_dt:
+                                gains["yesterday"] += profit
+                                
+                            if deal_time >= this_week_start_dt:
+                                gains["week"] += profit
+                            elif deal_time >= last_week_start_dt and deal_time < this_week_start_dt:
+                                gains["last_week"] += profit
+                                
+                            if deal_time >= this_month_start_dt:
+                                gains["month"] += profit
+                                
+                mt5_history_cache[inst_id] = {"timestamp": current_time, "gains": gains}
+            
+            inst_risk["realized_gains"] = mt5_history_cache[inst_id]["gains"]
+            
             return inst_risk
     except Exception as e:
         logging.error(f"Error fetching data for instance {inst_name}: {e}")
@@ -422,9 +477,12 @@ def poller_thread():
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
             try:
-                c.execute("SELECT id, name, path, symbol_suffix, group_name FROM instances")
+                c.execute("SELECT id, name, path, symbol_suffix, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier FROM instances")
             except sqlite3.OperationalError:
-                c.execute("SELECT id, name, path, symbol_suffix, 'Ungrouped' as group_name FROM instances")
+                try:
+                    c.execute("SELECT id, name, path, symbol_suffix, group_name FROM instances")
+                except sqlite3.OperationalError:
+                    c.execute("SELECT id, name, path, symbol_suffix, 'Ungrouped' as group_name FROM instances")
             instances = c.fetchall()
             
             risk_payload = []
@@ -554,12 +612,15 @@ def api_instances():
     
     if request.method == 'GET':
         try:
-            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name FROM instances ORDER BY id ASC")
+            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier FROM instances ORDER BY id ASC")
         except sqlite3.OperationalError:
             try:
-                c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time FROM instances ORDER BY id ASC")
+                c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name FROM instances ORDER BY id ASC")
             except sqlite3.OperationalError:
-                c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe FROM instances ORDER BY id ASC")
+                try:
+                    c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time FROM instances ORDER BY id ASC")
+                except sqlite3.OperationalError:
+                    c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe FROM instances ORDER BY id ASC")
             
         rows = c.fetchall()
         instances = []
@@ -577,13 +638,23 @@ def api_instances():
                 current_profit = closed_profit + unrealized_profit
                 
             group_name = r[9] if len(r) > 9 else 'Ungrouped'
+            copier_role = r[10] if len(r) > 10 else 'NONE'
+            copier_risk_type = r[11] if len(r) > 11 else 'FIXED'
+            copier_fixed_lot = r[12] if len(r) > 12 else 0.01
+            copier_risk_usd = r[13] if len(r) > 13 else 100.0
+            copier_risk_multiplier = r[14] if len(r) > 14 else 1.0
             
             instances.append({
                 "id": inst_id, "name": r[1], "path": r[2], "risk_usd": r[3], 
                 "symbol_mapping": r[4], "auto_trade": r[5], "accepted_timeframe": r[6] or 'all',
                 "profit_limit": profit_limit or 0, "profit_limit_start_time": profit_limit_start_time or 0,
                 "current_profit": current_profit,
-                "group_name": group_name
+                "group_name": group_name,
+                "copier_role": copier_role,
+                "copier_risk_type": copier_risk_type,
+                "copier_fixed_lot": copier_fixed_lot,
+                "copier_risk_usd": copier_risk_usd,
+                "copier_risk_multiplier": copier_risk_multiplier
             })
         conn.close()
         return jsonify(instances)

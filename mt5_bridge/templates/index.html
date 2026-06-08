@@ -1,25 +1,37 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Visual Trading Console</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
+
 <body>
 
     <div class="app-container">
         <!-- Condensed Control Bar -->
         <header class="toolbar" style="padding-left: 0; padding-bottom: 0;">
-            <div class="toolbar-left" style="display: flex; align-items: center; gap: 10px; height: 100%; padding-left: 8px;">
-                <strong style="font-size: 11px; letter-spacing: 0.5px; font-weight: bold; color: var(--text-main); margin-bottom: 4px; padding-right: 8px; border-right: 1px solid var(--border-color); height: 16px; display: flex; align-items: center;">VISUAL CONSOLE</strong>
+            <div class="toolbar-left"
+                style="display: flex; align-items: center; gap: 10px; height: 100%; padding-left: 8px;">
+                <strong
+                    style="font-size: 11px; letter-spacing: 0.5px; font-weight: bold; color: var(--text-main); margin-bottom: 4px; padding-right: 8px; border-right: 1px solid var(--border-color); height: 16px; display: flex; align-items: center;">VISUAL
+                    CONSOLE</strong>
                 <button id="btn-settings" class="btn-toolbar" style="margin-bottom: 4px;">Settings</button>
-                <button id="btn-copier" class="btn-toolbar" style="margin-bottom: 4px; border-color: #8bb4f7; color: #8bb4f7;" onclick="window.location.href='/copier'">Trade Copier ⧉</button>
-                <button id="btn-toggle-dashboard" class="btn-toolbar" style="margin-bottom: 4px; border-color: var(--color-active); color: var(--color-active);">Review Panel ➔</button>
+                <button id="btn-copier" class="btn-toolbar"
+                    style="margin-bottom: 4px; border-color: #8bb4f7; color: #8bb4f7;"
+                    onclick="window.location.href='/copier'">Trade Copier ⧉</button>
+                <button id="btn-toggle-dashboard" class="btn-toolbar"
+                    style="margin-bottom: 4px; border-color: var(--color-active); color: var(--color-active);">Review
+                    Panel ➔</button>
             </div>
-            
-            <div class="toolbar-center" style="display: flex; align-items: center; gap: 15px; margin-bottom: 4px; font-size: 10px; color: var(--text-muted); font-family: Consolas, monospace;">
-                <div id="toolbar-date" style="font-weight: bold; color: var(--text-main); border-right: 1px solid var(--border-color); padding-right: 15px; letter-spacing: 0.5px;"></div>
+
+            <div class="toolbar-center"
+                style="display: flex; align-items: center; gap: 15px; margin-bottom: 4px; font-size: 10px; color: var(--text-muted); font-family: Consolas, monospace;">
+                <div id="toolbar-date"
+                    style="font-weight: bold; color: var(--text-main); border-right: 1px solid var(--border-color); padding-right: 15px; letter-spacing: 0.5px;">
+                </div>
                 <div style="display: flex; gap: 14px; align-items: center;">
                     <div>TOTAL BAL: <strong id="agg-bal" style="color: var(--text-main);">$0.00</strong></div>
                     <div>TOTAL EQ: <strong id="agg-eq" style="color: var(--text-main);">$0.00</strong></div>
@@ -27,7 +39,7 @@
                     <div>ACTIVE TRADES: <strong id="agg-trades" style="color: var(--text-main);">0</strong></div>
                 </div>
             </div>
-            
+
             <div class="toolbar-right" style="margin-bottom: 4px; padding-right: 8px;">
                 <div class="status-indicator">
                     <span id="mt5-status-icon" class="status-icon offline"></span>
@@ -38,20 +50,30 @@
 
         <!-- Main Workspace -->
         <div class="workspace workspace-monitoring" id="main-workspace">
-            
+
             <!-- Pane 1: Overview & Health Cards -->
             <section class="pane pane-overview" style="grid-area: overview;">
                 <div class="pane-header">Instances Overview</div>
                 <div class="pane-content" id="overview-container">
-                    <div class="health-cards-grid" id="health-cards-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px;">
-                        <!-- Cards injected here -->
+                    <div id="master-cards-container" style="display: flex; justify-content: center; gap: 15px; width: 100%; margin-bottom: 60px; flex-wrap: wrap;">
+                        <!-- Master cards injected here -->
+                    </div>
+                    <div id="sub-cards-container" style="display: flex; justify-content: center; gap: 15px; width: 100%; margin-bottom: 60px; flex-wrap: wrap;">
+                        <!-- Sub cards injected here -->
+                    </div>
+                    <div class="health-cards-grid" id="health-cards-grid"
+                        style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px;">
+                        <!-- Unconfigured Cards injected here -->
                     </div>
                 </div>
             </section>
-            
+
             <!-- Pane 2: Active Positions -->
-            <section class="pane pane-positions" style="grid-area: active;">
-                <div class="pane-header">Active Positions</div>
+            <section class="pane pane-positions" id="pane-active-positions" style="grid-area: active;">
+                <div class="pane-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none;" onclick="toggleActivePositions()">
+                    <span>Active Positions</span>
+                    <span id="active-positions-toggle-icon" style="font-size: 9px;">▼</span>
+                </div>
                 <div class="pane-content table-container">
                     <table class="data-grid" id="active-positions-table">
                         <thead>
@@ -72,7 +94,7 @@
                     </table>
                 </div>
             </section>
-            
+
             <!-- Pane 3: Trading Logs -->
             <section class="pane pane-trading" style="grid-area: trading; display: flex; flex-direction: column;">
                 <div class="pane-header">Trading History & Logs</div>
@@ -84,11 +106,12 @@
             <!-- Pane 4: Story Notes -->
             <section class="pane pane-notes" style="grid-area: logs; display: flex; flex-direction: column;">
                 <div class="pane-header">Story Notes</div>
-                <div class="pane-content" style="padding: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+                <div class="pane-content"
+                    style="padding: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden;">
                     {% include 'story_notes.html' %}
                 </div>
             </section>
-            
+
         </div>
     </div>
 
@@ -106,13 +129,15 @@
                 <h4 id="modal-action-symbol" style="margin-bottom: 15px;"></h4>
                 <div class="input-field-group col-full">
                     <label>Story Notes</label>
-                    <textarea id="modal-notes-input" rows="4" placeholder="Enter notes for this trade..." style="width: 100%; resize: vertical; padding: 8px; background: var(--bg-input); border: 1px solid var(--border-dark); color: var(--text-main); border-radius: 4px;"></textarea>
+                    <textarea id="modal-notes-input" rows="4" placeholder="Enter notes for this trade..."
+                        style="width: 100%; resize: vertical; padding: 8px; background: var(--bg-input); border: 1px solid var(--border-dark); color: var(--text-main); border-radius: 4px;"></textarea>
                 </div>
-                <button id="modal-save-btn" class="btn btn-primary-premium" style="width: 100%; margin-top: 10px;">Save Notes</button>
+                <button id="modal-save-btn" class="btn btn-primary-premium" style="width: 100%; margin-top: 10px;">Save
+                    Notes</button>
             </div>
         </div>
     </div>
-    
+
     <!-- Settings Modal -->
 
     <div id="settings-modal" class="modal-overlay">
@@ -121,31 +146,34 @@
                 <span class="modal-title">Configure MT5 Instances</span>
                 <button id="btn-close-settings" class="btn-close-modal" aria-label="Close Settings">&times;</button>
             </div>
-            
+
             <!-- Navigation Tabs -->
             <div class="settings-tabs">
                 <button class="settings-tab-btn active" data-settings-tab="global">Global Settings</button>
                 <button class="settings-tab-btn" data-settings-tab="instances">MT5 Instances</button>
             </div>
-            
+
             <div class="modal-body">
                 <!-- Panel 1: Global Settings -->
                 <div id="settings-panel-global" class="settings-panel active">
                     <div class="settings-group">
                         <div class="setting-row-toggle">
                             <div class="setting-desc">
-                                <label for="global-trade-disable" class="setting-label-highlight">Master Trade Disable</label>
-                                <span class="setting-subtext">Instantly pause all signal processing and trade executions globally.</span>
+                                <label for="global-trade-disable" class="setting-label-highlight">Master Trade
+                                    Disable</label>
+                                <span class="setting-subtext">Instantly pause all signal processing and trade executions
+                                    globally.</span>
                             </div>
                             <label class="switch">
                                 <input type="checkbox" id="global-trade-disable">
                                 <span class="slider round"></span>
                             </label>
                         </div>
-                        
+
                         <div class="setting-card">
                             <span class="card-title">Daily Disable Time Window</span>
-                            <span class="card-subtitle">Specify a daily time range during which all trade execution is disabled (e.g. overnight).</span>
+                            <span class="card-subtitle">Specify a daily time range during which all trade execution is
+                                disabled (e.g. overnight).</span>
                             <div class="time-range-row">
                                 <div class="input-field-group">
                                     <label for="global-disable-start">Start Time</label>
@@ -158,7 +186,8 @@
                             </div>
                         </div>
 
-                        <button id="btn-save-global-settings" class="btn btn-primary-premium">Save Global Settings</button>
+                        <button id="btn-save-global-settings" class="btn btn-primary-premium">Save Global
+                            Settings</button>
                     </div>
                 </div>
 
@@ -171,10 +200,10 @@
                                 <!-- Instances injected here -->
                             </div>
                         </div>
-                        
+
                         <div class="setting-card add-instance-card">
                             <span id="heading-add-instance" class="card-title">Add New Instance</span>
-                            
+
                             <div class="form-grid">
                                 <div class="input-field-group col-2-3">
                                     <label for="new-instance-name">Instance Name</label>
@@ -184,23 +213,26 @@
                                     <label for="new-instance-risk">Risk Amount ($)</label>
                                     <input type="number" id="new-instance-risk" value="100">
                                 </div>
-                                
+
                                 <div class="input-field-group col-1-3">
                                     <label for="new-instance-profit-limit">Profit Limit ($)</label>
-                                    <input type="number" id="new-instance-profit-limit" placeholder="0 = No limit" value="0">
+                                    <input type="number" id="new-instance-profit-limit" placeholder="0 = No limit"
+                                        value="0">
                                 </div>
-                                
+
                                 <div class="input-field-group col-full">
                                     <label for="new-instance-path">MetaTrader 5 Executable Path</label>
                                     <div class="path-input-wrapper">
-                                        <input type="text" id="new-instance-path" placeholder="C:\Program Files\...\terminal64.exe">
+                                        <input type="text" id="new-instance-path"
+                                            placeholder="C:\Program Files\...\terminal64.exe">
                                         <button id="btn-browse-path" class="btn-secondary-premium">Browse...</button>
                                     </div>
                                 </div>
 
                                 <div class="input-field-group col-full">
                                     <label for="new-instance-mapping">Symbol Mapping</label>
-                                    <input type="text" id="new-instance-mapping" placeholder="e.g. XAUUSD:GOLD,EURUSD:EURUSD.m">
+                                    <input type="text" id="new-instance-mapping"
+                                        placeholder="e.g. XAUUSD:GOLD,EURUSD:EURUSD.m">
                                     <span class="input-tip">Format: TV_SYMBOL:MT5_SYMBOL (comma-separated list)</span>
                                 </div>
 
@@ -218,7 +250,7 @@
                                         <option value="D">Daily</option>
                                     </select>
                                 </div>
-                                
+
                                 <div class="toggle-switch-field col-1-3">
                                     <div style="display: flex; flex-direction: column;">
                                         <label for="new-instance-auto" class="toggle-field-label">Auto Trade</label>
@@ -230,8 +262,9 @@
                                     </label>
                                 </div>
                             </div>
-                            
-                            <button id="btn-add-instance" class="btn btn-primary-premium" style="margin-top: 6px;">Add Instance</button>
+
+                            <button id="btn-add-instance" class="btn btn-primary-premium" style="margin-top: 6px;">Add
+                                Instance</button>
                         </div>
                     </div>
                 </div>
@@ -240,6 +273,8 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/leader-line-new@1.1.9/leader-line.min.js"></script>
     <script src="/static/main.js?v=3.2"></script>
 </body>
+
 </html>
