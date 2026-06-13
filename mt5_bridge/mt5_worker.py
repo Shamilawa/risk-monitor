@@ -196,7 +196,7 @@ def close_trade(ticket, volume):
         "price": price,
         "deviation": 20,
         "magic": 777888,
-        "comment": "Copier Close",
+        "comment": "",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }

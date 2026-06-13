@@ -958,10 +958,10 @@ def api_execute_trade():
         t2_ticket = None
         
         if split_trade:
-            t1_ticket = execute_trade(actual_symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", "")
-            t2_ticket = execute_trade(actual_symbol, action, sl, tp2, vol2, entry, inst_path, magic_number, "Orig_TP2", "")
+            t1_ticket = execute_trade(actual_symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "", "")
+            t2_ticket = execute_trade(actual_symbol, action, sl, tp2, vol2, entry, inst_path, magic_number, "", "")
         else:
-            t1_ticket = execute_trade(actual_symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", "")
+            t1_ticket = execute_trade(actual_symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "", "")
             
         status = 'PENDING_ORIGINAL' if t1_ticket else 'FAILED_EXECUTION'
         
@@ -1024,10 +1024,10 @@ def api_retry_trade():
     t2_ticket = None
     
     if split_trade:
-        t1_ticket = execute_trade(actual_symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", "")
-        t2_ticket = execute_trade(actual_symbol, action, sl, tp2, vol2, entry, inst_path, magic_number, "Orig_TP2", "")
+        t1_ticket = execute_trade(actual_symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "", "")
+        t2_ticket = execute_trade(actual_symbol, action, sl, tp2, vol2, entry, inst_path, magic_number, "", "")
     else:
-        t1_ticket = execute_trade(actual_symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "Orig_TP1", "")
+        t1_ticket = execute_trade(actual_symbol, action, sl, tp1, vol1, entry, inst_path, magic_number, "", "")
         
     if t1_ticket:
         c.execute("UPDATE trade_groups SET trade_1_ticket=?, trade_2_ticket=?, status='PENDING_ORIGINAL' WHERE id=?", 
@@ -1076,7 +1076,7 @@ def api_place_recovery_trade():
         except Exception as e:
             logging.error(f"Error parsing symbol mapping for recovery: {e}")
             
-    new_rec_ticket = execute_trade(actual_symbol, rec_action, rec_sl, rec_tp, rec_volume, rec_entry, inst_path, magic_number, "Recovery", symbol_suffix)
+    new_rec_ticket = execute_trade(actual_symbol, rec_action, rec_sl, rec_tp, rec_volume, rec_entry, inst_path, magic_number, "", symbol_suffix)
     
     if new_rec_ticket:
         c.execute("UPDATE trade_groups SET recovery_ticket=? WHERE id=?", (new_rec_ticket, trade_id))
@@ -1115,7 +1115,7 @@ def close_instance_positions(inst):
                         "price": price,
                         "deviation": 50,
                         "magic": p.magic,
-                        "comment": "Panic Close All",
+                        "comment": "",
                         "type_time": mt5.ORDER_TIME_GTC,
                         "type_filling": mt5.ORDER_FILLING_IOC,
                     }
