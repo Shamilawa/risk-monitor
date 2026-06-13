@@ -1,3 +1,4 @@
+import { useState, useRef, useEffect } from 'react';
 import TrackerTable from './TrackerTable';
 import InstancesOverview from './InstancesOverview';
 import { useStore } from '../store/useStore';
@@ -7,15 +8,68 @@ import type { Instance } from '../types';
 const Dashboard = () => {
   const instances = useStore((state) => state.instances || []);
 
+  const [watchlistWidth, setWatchlistWidth] = useState(320);
+  const [positionsHeight, setPositionsHeight] = useState(300);
+
+  const isDraggingVertical = useRef(false);
+  const isDraggingHorizontal = useRef(false);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      let changed = false;
+      if (isDraggingVertical.current) {
+        const newWidth = Math.max(180, Math.min(e.clientX, 600));
+        setWatchlistWidth(newWidth);
+        changed = true;
+      }
+      if (isDraggingHorizontal.current) {
+        const windowHeight = window.innerHeight;
+        // 36px for header, limiting heights
+        const newHeight = Math.max(100, Math.min(windowHeight - e.clientY - 36, windowHeight - 150));
+        setPositionsHeight(newHeight);
+        changed = true;
+      }
+      if (changed) {
+        // Trigger LeaderLine redraw event
+        window.dispatchEvent(new Event('resize'));
+      }
+    };
+
+    const handleMouseUp = () => {
+      isDraggingVertical.current = false;
+      isDraggingHorizontal.current = false;
+      document.body.style.userSelect = '';
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
   const formatCurrency = (val: number) => {
     return val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   };
 
   return (
-    <div className="workspace" style={{ padding: '4px', height: 'calc(100vh - 36px)', display: 'grid', gridTemplateColumns: '320px 1fr', gridTemplateRows: '1.2fr 4px 1fr', gridTemplateAreas: '"watchlist overview" "splitter splitter" "active active"', gap: '4px', overflow: 'hidden' }}>
+    <div 
+      className="workspace" 
+      style={{ 
+        padding: '4px', 
+        height: 'calc(100vh - 36px)', 
+        display: 'grid', 
+        gridTemplateColumns: `${watchlistWidth}px 4px 1fr`, 
+        gridTemplateRows: `1fr 4px ${positionsHeight}px`, 
+        gridTemplateAreas: '"watchlist vsplitter overview" "hsplitter hsplitter hsplitter" "active active active"', 
+        gap: 0, 
+        overflow: 'hidden' 
+      }}
+    >
       
       {/* Left Pane: Terminal Watchlist */}
-      <section className="pane" style={{ gridArea: 'watchlist' }}>
+      <section className="pane" style={{ gridArea: 'watchlist', marginRight: 0 }}>
         <div className="pane-header">Watchlist / Status Desk</div>
         <div className="pane-content table-container" style={{ padding: 0 }}>
           <table className="data-grid" style={{ width: '100%' }}>
@@ -68,15 +122,35 @@ const Dashboard = () => {
         </div>
       </section>
 
+      {/* Vertical Splitter */}
+      <div
+        className="splitter-vertical"
+        style={{ gridArea: 'vsplitter' }}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          isDraggingVertical.current = true;
+          document.body.style.userSelect = 'none';
+        }}
+      />
+
       {/* Right Pane: Graph Overview */}
-      <section className="pane pane-overview" style={{ gridArea: 'overview' }}>
+      <section className="pane pane-overview" style={{ gridArea: 'overview', marginLeft: 0 }}>
         <div className="pane-header">Instances Graph Desk</div>
         <div className="pane-content" id="overview-container" style={{ padding: '4px', overflowY: 'auto', background: 'var(--bg-secondary)' }}>
           <InstancesOverview />
         </div>
       </section>
 
-      <div className="splitter-horizontal" id="main-splitter" style={{ gridArea: 'splitter' }}></div>
+      {/* Horizontal Splitter */}
+      <div
+        className="splitter-horizontal"
+        style={{ gridArea: 'hsplitter' }}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          isDraggingHorizontal.current = true;
+          document.body.style.userSelect = 'none';
+        }}
+      />
 
       {/* Bottom Pane: Active Positions Table */}
       <section className="pane pane-positions" style={{ gridArea: 'active' }}>

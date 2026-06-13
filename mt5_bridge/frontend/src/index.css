@@ -423,6 +423,19 @@ body {
     background-color: var(--color-active);
 }
 
+.splitter-vertical {
+    width: 4px;
+    background-color: var(--border-color);
+    cursor: col-resize;
+    z-index: 100;
+    transition: background-color 0.2s;
+    border-radius: 2px;
+}
+
+.splitter-vertical:hover, .splitter-vertical.active {
+    background-color: var(--color-active);
+}
+
 .pane-content {
     flex-grow: 1;
     overflow-y: auto;
