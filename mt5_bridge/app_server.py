@@ -6,6 +6,7 @@ import urllib.request
 import json
 import MetaTrader5 as mt5
 from flask import Flask, request, jsonify, render_template, Response
+from flask_socketio import SocketIO, emit
 import os
 import requests
 from dotenv import load_dotenv
@@ -29,8 +30,7 @@ mt5_history_cache = {}
 MAX_RECENT_LOGS = 100
 
 def notify_clients(event, data):
-    for q in clients:
-        q.put({"event": event, "data": data})
+    socketio.emit(event, data)
 
 # --- LOGGING HANDLER ---
 class SSEHandler(logging.Handler):
@@ -55,9 +55,17 @@ sse_handler.setFormatter(formatter)
 logger.addHandler(sse_handler)
 
 # --- FLASK APP ---
-# Specify static and template folders to be in the current directory
-flask_app = Flask(__name__, static_folder='static', template_folder='templates')
+import os
+from flask import send_from_directory
+
+basedir = os.path.abspath(os.path.dirname(__file__))
+frontend_dist = os.path.join(basedir, 'frontend', 'dist')
+
+# Specify static and template folders to point to the Vite build
+flask_app = Flask(__name__, static_folder=frontend_dist, static_url_path='/', template_folder=frontend_dist)
 flask_app.config['TEMPLATES_AUTO_RELOAD'] = True
+flask_app.config['SECRET_KEY'] = 'secret!'
+socketio = SocketIO(flask_app, cors_allowed_origins="*", async_mode='threading')
 werk_log = logging.getLogger('werkzeug')
 werk_log.setLevel(logging.ERROR)
 
@@ -561,14 +569,8 @@ def reconcile_on_boot():
             logging.error("MT5 init failed during boot.")
             return
 
-# --- FLASK ENDPOINTS ---
-@flask_app.route('/')
-def index():
-    return render_template('index.html')
+# --- FLASK ROUTES ---
 
-@flask_app.route('/copier')
-def copier_page():
-    return render_template('copier.html')
 
 @flask_app.route('/api/internal_notify', methods=['POST'])
 def internal_notify():
@@ -1784,6 +1786,21 @@ def copier_manager_thread():
             
         time.sleep(3)
 
+@flask_app.route('/', defaults={'path': ''})
+@flask_app.route('/<path:path>')
+def serve_react(path):
+    if path.startswith('api/'):
+        return "Not found", 404
+        
+    full_path = os.path.join(flask_app.static_folder, path)
+    if path != "" and os.path.exists(full_path):
+        return send_from_directory(flask_app.static_folder, path)
+        
+    try:
+        return render_template('index.html')
+    except Exception as e:
+        return f"Please run 'npm run build' inside the frontend directory. Error: {e}", 500
+
 def main():
     logging.info("Starting Premium MT5 Bridge Server...")
     
@@ -1800,8 +1817,8 @@ def main():
     # Auto-open browser
     threading.Thread(target=lambda: (time.sleep(1), webbrowser.open("http://127.0.0.1:5000")), daemon=True).start()
 
-    # Run Flask
-    flask_app.run(host='0.0.0.0', port=5000, use_reloader=False)
+    # Run Flask with SocketIO
+    socketio.run(flask_app, host='0.0.0.0', port=5000, use_reloader=False, allow_unsafe_werkzeug=True)
 
 if __name__ == "__main__":
     main()
