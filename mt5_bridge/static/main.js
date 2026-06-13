@@ -649,9 +649,11 @@ document.addEventListener('DOMContentLoaded', () => {
         toggleDashBtn.addEventListener('click', () => {
             if (currentDashboard === 'monitoring') {
                 currentDashboard = 'review';
-                toggleDashBtn.innerText = 'Monitoring Mode';
-                toggleDashBtn.style.color = 'var(--text-main)';
-                toggleDashBtn.style.borderColor = 'var(--border-color)';
+                
+                // Tab styling
+                toggleDashBtn.classList.add('active');
+                const dashTab = document.getElementById('tab-dashboard');
+                if (dashTab) dashTab.classList.remove('active');
                 
                 mainWorkspace.className = 'workspace workspace-review';
                 document.querySelector('.pane-overview').style.display = 'none';
@@ -661,17 +663,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 fetchPerformance();
                 fetchStoryDates();
-            } else {
-                currentDashboard = 'monitoring';
-                toggleDashBtn.innerText = 'Review Mode';
-                toggleDashBtn.style.color = 'var(--text-main)';
-                toggleDashBtn.style.borderColor = 'var(--border-color)';
-                
-                mainWorkspace.className = 'workspace workspace-monitoring';
-                document.querySelector('.pane-overview').style.display = 'flex';
-                document.querySelector('.pane-positions').style.display = 'flex';
-                document.querySelector('.pane-trading').style.display = 'none';
-                document.querySelector('.pane-notes').style.display = 'none';
             }
         });
     }
