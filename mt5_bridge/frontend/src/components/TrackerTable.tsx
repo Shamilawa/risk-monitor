@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../store/useStore';
 import type { Position } from '../types';
+import { FlashCell } from './FlashCell';
 
 const TrackerTable = () => {
   const instances = useStore((state) => state.instances || []);
@@ -14,6 +15,20 @@ const TrackerTable = () => {
   };
 
   const hasAnyPositions = instances.some((inst) => inst.positions && inst.positions.length > 0);
+
+  const formatCurrency = (val: number) => {
+    return val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  const formatPrice = (val: number) => {
+    if (!val) return '0.00';
+    // Match common fx/crypto decimals dynamically
+    const decimals = val.toString().split('.')[1]?.length || 2;
+    return val.toLocaleString('en-US', { 
+      minimumFractionDigits: Math.max(2, Math.min(decimals, 5)), 
+      maximumFractionDigits: Math.max(2, Math.min(decimals, 5)) 
+    });
+  };
 
   return (
     <div className="pane-content table-container" style={{ padding: 0 }}>
@@ -65,7 +80,7 @@ const TrackerTable = () => {
                             {roleBadge}
                             <span style={{ fontSize: '9px', color: 'var(--text-muted)', marginLeft: '10px' }}>{inst.positions.length} Trades</span>
                             <span style={{ float: 'right', color: profitColor, fontWeight: 'bold' }}>
-                              ${instProfit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              $<FlashCell value={instProfit} format={formatCurrency} />
                             </span>
                           </td>
                         </tr>
@@ -83,12 +98,14 @@ const TrackerTable = () => {
                               </td>
                               <td style={{ width: '10%' }}><span className={`badge-dense ${tClass}`}>{p.type}</span></td>
                               <td style={{ width: '10%' }}>{p.volume}</td>
-                              <td style={{ width: '15%' }}>{p.price_open}</td>
-                              <td style={{ width: '15%' }}>{p.price_current}</td>
+                              <td style={{ width: '15%' }}>{formatPrice(p.price_open)}</td>
+                              <td style={{ width: '15%' }}>
+                                <FlashCell value={p.price_current} format={formatPrice} />
+                              </td>
                               <td style={{ width: '10%' }}>{distSlStr}</td>
                               <td style={{ width: '10%' }}>${p.risk_usd?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                               <td style={{ width: '10%', color: pColor, fontWeight: 'bold' }}>
-                                ${p.profit?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                $<FlashCell value={p.profit} format={formatCurrency} />
                               </td>
                             </tr>
                           );

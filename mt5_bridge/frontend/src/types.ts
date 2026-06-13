@@ -28,4 +28,10 @@ export interface Instance {
   margin_level?: number;
   positions?: Position[];
   realized_gains?: Record<string, number>;
+  symbol_mapping?: string;
+  auto_trade?: number;
+  accepted_timeframe?: string;
+  profit_limit?: number;
+  risk_usd?: number;
+  group_name?: string;
 }

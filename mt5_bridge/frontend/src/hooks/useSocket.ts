@@ -28,6 +28,9 @@ export const useSocket = () => {
     socket.on('risk_data', (data) => {
       try {
         const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+        if (Array.isArray(parsed)) {
+          parsed.sort((a: Instance, b: Instance) => a.id - b.id);
+        }
         setInstances(parsed);
 
         // Flatten positions across all instances for the active positions table

@@ -1,27 +1,45 @@
-/* Modern Platform Blend (FreeStoxx/TradingView style) */
+/* High-Density Terminal Blend (Bloomberg/ThinkOrSwim Style) */
 :root, [data-theme="dark"] {
-    --bg-app: #0b0e11; /* Deep dark neutral background */
-    --bg-panel: #15181d; /* Panel background */
-    --bg-toolbar: #1c2026; /* Headers and toolbars */
-    --bg-header: #15181d;
-    --bg-row-alt: #0b0e11;
-    --bg-row-hover: #2a2e39;
-    --bg-secondary: #111418;
-    --bg-magic-row: #1e222d;
+    --bg-app: #060708; /* Pure dark terminal background */
+    --bg-panel: #0b0d10; /* Border-bound slate panels */
+    --bg-toolbar: #101216; /* Control headers */
+    --bg-header: #0b0d10;
+    --bg-row-alt: #060708;
+    --bg-row-hover: #171a21;
+    --bg-secondary: #08090b;
+    --bg-magic-row: #131722;
     
-    --border-color: #2a2e35;
-    --border-dark: #363a45;
+    --border-color: #1a1d22; /* Fine dividers */
+    --border-dark: #242933;
     
-    --text-main: #d1d4dc; /* Crisp light grey */
-    --text-muted: #787b86; /* Muted grey */
+    --text-main: #e2e4ed; /* High-contrast crisp gray */
+    --text-muted: #6f737d; /* Dim gray for headers/labels */
     
-    --color-buy: #089981; /* Sharp modern green */
-    --color-sell: #f23645; /* Sharp modern red */
-    --color-buy-bg: rgba(8, 153, 129, 0.15);
-    --color-sell-bg: rgba(242, 54, 69, 0.15);
+    --color-buy: #00ff66; /* Neon terminal green */
+    --color-sell: #ff3b30; /* Neon terminal red */
+    --color-buy-bg: rgba(0, 255, 102, 0.1);
+    --color-sell-bg: rgba(255, 59, 48, 0.1);
     
-    --color-pending: #f5a623;
-    --color-active: #2962ff; /* Modern active blue */
+    --color-pending: #f39c12;
+    --color-active: #2962ff;
+}
+
+@keyframes flash-green {
+    0% { background-color: rgba(0, 255, 102, 0.35); }
+    100% { background-color: transparent; }
+}
+
+@keyframes flash-red {
+    0% { background-color: rgba(255, 59, 48, 0.35); }
+    100% { background-color: transparent; }
+}
+
+.flash-up {
+    animation: flash-green 0.6s ease-out;
+}
+
+.flash-down {
+    animation: flash-red 0.6s ease-out;
 }
 
 /* Global Reset & Typography */

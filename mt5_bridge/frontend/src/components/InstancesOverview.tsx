@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../store/useStore';
 import type { Instance } from '../types';
+import { FlashCell } from './FlashCell';
 
 interface LeaderLineInstance {
   remove: () => void;
@@ -124,16 +125,10 @@ const InstancesOverview = () => {
   const renderCard = (inst: Instance) => {
     const period = selectedPeriods[inst.id] || 'today';
     const realizedVal = inst.realized_gains?.[period] || 0.0;
-    const sign = realizedVal > 0 ? '+' : '';
     const gainColor = realizedVal > 0 ? 'var(--color-buy)' : (realizedVal < 0 ? 'var(--color-sell)' : 'var(--text-secondary)');
-    const realizedText = `${sign}$${realizedVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
     const floatingPnl = (inst.equity || 0) - (inst.balance || 0);
-    const pnlAbs = Math.abs(floatingPnl);
-    const pnlSign = floatingPnl > 0 ? '+' : (floatingPnl < 0 ? '-' : '');
-    const pnlPct = (inst.balance && inst.balance > 0) ? ((pnlAbs / inst.balance) * 100).toFixed(2) : '0.00';
     const pnlColor = floatingPnl > 0 ? 'var(--color-buy)' : (floatingPnl < 0 ? 'var(--color-sell)' : 'var(--text-main)');
-    const pnlText = `${pnlSign}$${pnlAbs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${pnlPct}%)`;
 
     const cardClass = `setting-card ${floatingPnl > 0 ? 'in-profit' : floatingPnl < 0 ? 'in-drawdown' : ''}`;
 
@@ -172,6 +167,22 @@ const InstancesOverview = () => {
       );
     }
 
+    const formatCurrency = (val: number) => {
+      return val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    };
+
+    const formatPnl = (val: number) => {
+      const pnlAbs = Math.abs(val);
+      const pnlSign = val > 0 ? '+' : (val < 0 ? '-' : '');
+      const pnlPct = (inst.balance && inst.balance > 0) ? ((pnlAbs / inst.balance) * 100).toFixed(2) : '0.00';
+      return `${pnlSign}$${pnlAbs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${pnlPct}%)`;
+    };
+
+    const formatRealized = (val: number) => {
+      const sign = val > 0 ? '+' : '';
+      return `${sign}$${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    };
+
     return (
       <div key={inst.id} id={`health-card-${inst.id}`} className={cardClass} style={{ padding: 0, margin: 0, ...flexStyle, background: 'var(--bg-panel)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column' }}>
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 8px', borderBottom: '1px solid var(--border-color)', background: 'var(--bg-toolbar)', fontWeight: 'bold' }}>
@@ -183,11 +194,11 @@ const InstancesOverview = () => {
         <div style={{ padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '10px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ color: 'var(--text-muted)' }}>Balance</span>
-            <strong style={{ color: 'var(--text-main)' }}>${inst.balance?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+            <strong style={{ color: 'var(--text-main)' }}>$<FlashCell value={inst.balance || 0} format={formatCurrency} /></strong>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ color: 'var(--text-muted)' }}>Equity</span>
-            <strong style={{ color: 'var(--text-main)' }}>${inst.equity?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+            <strong style={{ color: 'var(--text-main)' }}>$<FlashCell value={inst.equity || 0} format={formatCurrency} /></strong>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ color: 'var(--text-muted)' }}>Trades</span>
@@ -195,7 +206,7 @@ const InstancesOverview = () => {
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ color: 'var(--text-muted)' }}>P&L</span>
-            <strong style={{ color: pnlColor }}>{pnlText}</strong>
+            <strong style={{ color: pnlColor }}><FlashCell value={floatingPnl} format={formatPnl} /></strong>
           </div>
           {copierInfoHtml}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px', paddingTop: '4px', borderTop: '1px solid var(--border-color)' }}>
@@ -210,7 +221,7 @@ const InstancesOverview = () => {
               <option value="last_week">Realized (L.Week)</option>
               <option value="month">Realized (Month)</option>
             </select>
-            <strong style={{ color: gainColor, fontSize: '10px' }}>{realizedText}</strong>
+            <strong style={{ color: gainColor, fontSize: '10px' }}><FlashCell value={realizedVal} format={formatRealized} /></strong>
           </div>
         </div>
       </div>

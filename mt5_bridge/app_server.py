@@ -525,6 +525,7 @@ def poller_thread():
                 results = [f.result() for f in concurrent.futures.as_completed(futures)]
                 
                 risk_payload = [r for r in results if r is not None]
+                risk_payload.sort(key=lambda x: x.get('id', 0))
                 online_count = len(risk_payload)
                 
                 is_any_online = online_count > 0
