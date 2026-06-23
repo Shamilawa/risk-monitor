@@ -279,6 +279,7 @@ def get_historical_equity_curve(current_balance, current_equity):
             
     return {"labels": labels, "data": data}
 
+
 mt5_lock = threading.Lock()
 
 def execute_trade(symbol, action_type, sl, tp, volume, entry_price, instance_path=None, magic=999111, 
