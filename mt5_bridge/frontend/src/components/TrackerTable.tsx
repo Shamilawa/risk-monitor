@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, Fragment } from 'react';
 import { useStore } from '../store/useStore';
 import type { Position } from '../types';
 import { FlashCell } from './FlashCell';
@@ -68,52 +68,46 @@ const TrackerTable = () => {
               }
 
               return (
-                <tr key={`group-${inst.id}`} style={{ display: 'contents' }}>
-                  <td colSpan={8} style={{ padding: 0, border: 'none' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                      <tbody>
-                        {/* Instance Header Row */}
-                        <tr className="tree-header tree-toggle" style={{ cursor: 'pointer' }} onClick={() => toggleExpand(inst.id)}>
-                          <td colSpan={8} style={{ padding: '4px 8px' }}>
-                            <span className={`toggle-icon ${isExpanded ? '' : 'collapsed'}`}>▼</span>
-                            <strong>{inst.name}</strong>
-                            {roleBadge}
-                            <span style={{ fontSize: '9px', color: 'var(--text-muted)', marginLeft: '10px' }}>{inst.positions.length} Trades</span>
-                            <span style={{ float: 'right', color: profitColor, fontWeight: 'bold' }}>
-                              $<FlashCell value={instProfit} format={formatCurrency} />
-                            </span>
-                          </td>
-                        </tr>
-                        
-                        {/* Position Rows */}
-                        {isExpanded && inst.positions.map((p: Position) => {
-                          const pColor = p.profit >= 0 ? 'var(--color-buy)' : 'var(--color-sell)';
-                          const tClass = p.type === 'BUY' ? 'bdg-buy' : 'bdg-sell';
-                          const distSlStr = p.dist_sl >= 0 ? p.dist_sl.toFixed(1) : 'No SL';
-                          
-                          return (
-                            <tr key={p.ticket}>
-                              <td className="indent-1" style={{ width: '20%', padding: '4px 8px' }}>
-                                <strong>{p.symbol}</strong> <span style={{ color: 'var(--text-muted)', fontSize: '8px' }}>({p.ticket})</span>
-                              </td>
-                              <td style={{ width: '10%' }}><span className={`badge-dense ${tClass}`}>{p.type}</span></td>
-                              <td style={{ width: '10%' }}>{p.volume}</td>
-                              <td style={{ width: '15%' }}>{formatPrice(p.price_open)}</td>
-                              <td style={{ width: '15%' }}>
-                                <FlashCell value={p.price_current} format={formatPrice} />
-                              </td>
-                              <td style={{ width: '10%' }}>{distSlStr}</td>
-                              <td style={{ width: '10%' }}>${p.risk_usd?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                              <td style={{ width: '10%', color: pColor, fontWeight: 'bold' }}>
-                                $<FlashCell value={p.profit} format={formatCurrency} />
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </td>
-                </tr>
+                <Fragment key={`group-${inst.id}`}>
+                  {/* Instance Header Row */}
+                  <tr className="tree-header tree-toggle" style={{ cursor: 'pointer' }} onClick={() => toggleExpand(inst.id)}>
+                    <td colSpan={8} style={{ padding: '4px 8px' }}>
+                      <span className={`toggle-icon ${isExpanded ? '' : 'collapsed'}`}>▼</span>
+                      <strong>{inst.name}</strong>
+                      {roleBadge}
+                      <span style={{ fontSize: '9px', color: 'var(--text-muted)', marginLeft: '10px' }}>{inst.positions.length} Trades</span>
+                      <span style={{ float: 'right', color: profitColor, fontWeight: 'bold' }}>
+                        $<FlashCell value={instProfit} format={formatCurrency} />
+                      </span>
+                    </td>
+                  </tr>
+                  
+                  {/* Position Rows */}
+                  {isExpanded && inst.positions.map((p: Position) => {
+                    const pColor = p.profit >= 0 ? 'var(--color-buy)' : 'var(--color-sell)';
+                    const tClass = p.type === 'BUY' ? 'bdg-buy' : 'bdg-sell';
+                    const distSlStr = p.dist_sl >= 0 ? p.dist_sl.toFixed(1) : 'No SL';
+                    
+                    return (
+                      <tr key={`${inst.id}-${p.ticket}`}>
+                        <td className="indent-1" style={{ width: '20%', padding: '4px 8px' }}>
+                          <strong>{p.symbol}</strong> <span style={{ color: 'var(--text-muted)', fontSize: '8px' }}>({p.ticket})</span>
+                        </td>
+                        <td style={{ width: '10%' }}><span className={`badge-dense ${tClass}`}>{p.type}</span></td>
+                        <td style={{ width: '10%' }}>{p.volume}</td>
+                        <td style={{ width: '15%' }}>{formatPrice(p.price_open)}</td>
+                        <td style={{ width: '15%' }}>
+                          <FlashCell value={p.price_current} format={formatPrice} />
+                        </td>
+                        <td style={{ width: '10%' }}>{distSlStr}</td>
+                        <td style={{ width: '10%' }}>${p.risk_usd?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        <td style={{ width: '10%', color: pColor, fontWeight: 'bold' }}>
+                          $<FlashCell value={p.profit} format={formatCurrency} />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </Fragment>
               );
             })
           )}
