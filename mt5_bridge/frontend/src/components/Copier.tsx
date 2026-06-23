@@ -137,6 +137,8 @@ const Copier = () => {
         auto_trade: updatedInst.auto_trade !== undefined ? updatedInst.auto_trade : (original.auto_trade || 0),
         accepted_timeframe: updatedInst.accepted_timeframe !== undefined ? updatedInst.accepted_timeframe : (original.accepted_timeframe || 'all'),
         profit_limit: updatedInst.profit_limit !== undefined ? updatedInst.profit_limit : (original.profit_limit || 0),
+        alert_drawdown_limit: updatedInst.alert_drawdown_limit !== undefined ? updatedInst.alert_drawdown_limit : (original.alert_drawdown_limit || 2.0),
+        alert_daily_profit_target: updatedInst.alert_daily_profit_target !== undefined ? updatedInst.alert_daily_profit_target : (original.alert_daily_profit_target || 0),
         group_name: original.group_name || 'Ungrouped',
       };
 
@@ -216,6 +218,8 @@ const Copier = () => {
       accepted_timeframe: 'all',
       auto_trade: 0,
       symbol_mapping: '{}',
+      alert_drawdown_limit: 2.0,
+      alert_daily_profit_target: 0,
     });
   };
 
@@ -241,6 +245,8 @@ const Copier = () => {
           accepted_timeframe: editingInstance.accepted_timeframe || 'all',
           auto_trade: editingInstance.auto_trade || 0,
           symbol_mapping: editingInstance.symbol_mapping || '{}',
+          alert_drawdown_limit: editingInstance.alert_drawdown_limit || 2.0,
+          alert_daily_profit_target: editingInstance.alert_daily_profit_target || 0,
         },
         {
           onSuccess: () => setEditingInstance(null),
@@ -257,6 +263,8 @@ const Copier = () => {
           profit_limit: editingInstance.profit_limit,
           accepted_timeframe: editingInstance.accepted_timeframe,
           auto_trade: editingInstance.auto_trade,
+          alert_drawdown_limit: editingInstance.alert_drawdown_limit,
+          alert_daily_profit_target: editingInstance.alert_daily_profit_target,
         },
         {
           onSuccess: () => setEditingInstance(null),
@@ -654,6 +662,31 @@ const Copier = () => {
                     <option value="240">4 hours</option>
                     <option value="D">Daily</option>
                   </select>
+                </div>
+              </div>
+
+              {/* Alert Configs */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                  <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Telegram: Alert Drawdown Limit (%)</label>
+                  <input
+                    type="number"
+                    value={editingInstance.alert_drawdown_limit ?? 2.0}
+                    onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, alert_drawdown_limit: parseFloat(e.target.value) } : null)}
+                    placeholder="2.0"
+                    step="0.1"
+                    style={{ background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', fontFamily: 'monospace', outline: 'none' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                  <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Telegram: Daily Profit Target ($)</label>
+                  <input
+                    type="number"
+                    value={editingInstance.alert_daily_profit_target ?? 0}
+                    onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, alert_daily_profit_target: parseFloat(e.target.value) } : null)}
+                    placeholder="0 = Disabled"
+                    style={{ background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', fontFamily: 'monospace', outline: 'none' }}
+                  />
                 </div>
               </div>
 

@@ -181,6 +181,12 @@ def init_db():
     try:
         c.execute("ALTER TABLE instances ADD COLUMN copier_risk_multiplier REAL DEFAULT 1.0")
     except sqlite3.OperationalError: pass
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN alert_drawdown_limit REAL DEFAULT 2.0")
+    except sqlite3.OperationalError: pass
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN alert_daily_profit_target REAL DEFAULT 0.0")
+    except sqlite3.OperationalError: pass
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS trading_log (
@@ -381,6 +387,8 @@ def fetch_instance_data(inst):
     copier_fixed_lot = inst[7] if len(inst) > 7 else 0.01
     copier_risk_usd = inst[8] if len(inst) > 8 else 100.0
     copier_risk_multiplier = inst[9] if len(inst) > 9 else 1.0
+    alert_drawdown_limit = inst[10] if len(inst) > 10 else 2.0
+    alert_daily_profit_target = inst[11] if len(inst) > 11 else 0.0
 
     try:
         with mt5_lock:
@@ -404,6 +412,8 @@ def fetch_instance_data(inst):
                 "copier_fixed_lot": copier_fixed_lot,
                 "copier_risk_usd": copier_risk_usd,
                 "copier_risk_multiplier": copier_risk_multiplier,
+                "alert_drawdown_limit": alert_drawdown_limit,
+                "alert_daily_profit_target": alert_daily_profit_target,
                 "positions": [],
                 "historical_equity": {"labels": [], "data": []}
             }
@@ -459,9 +469,10 @@ def fetch_instance_data(inst):
                 this_week_start_dt = today_start_dt - timedelta(days=now_dt.weekday())
                 last_week_start_dt = this_week_start_dt - timedelta(days=7)
                 this_month_start_dt = datetime(now_dt.year, now_dt.month, 1)
+                last_month_start_dt = (this_month_start_dt - timedelta(days=1)).replace(day=1)
 
                 deals = mt5.history_deals_get(0, 2147483647)
-                gains = {"today": 0.0, "yesterday": 0.0, "week": 0.0, "last_week": 0.0, "month": 0.0}
+                gains = {"today": 0.0, "yesterday": 0.0, "week": 0.0, "last_week": 0.0, "month": 0.0, "last_month": 0.0}
                 
                 if deals:
                     for d in deals:
@@ -483,6 +494,8 @@ def fetch_instance_data(inst):
                                 
                             if deal_time >= this_month_start_dt:
                                 gains["month"] += profit
+                            elif deal_time >= last_month_start_dt and deal_time < this_month_start_dt:
+                                gains["last_month"] += profit
                                 
                 mt5_history_cache[inst_id] = {"timestamp": current_time, "gains": gains}
             
@@ -493,6 +506,12 @@ def fetch_instance_data(inst):
         logging.error(f"Error fetching data for instance {inst_name}: {e}")
         return None
 
+active_positions_cache = {}
+drawdown_alert_state = {}
+daily_profit_alert_state = {}
+connection_fail_count = {}
+last_summary_date = ""
+
 def poller_thread():
     global global_mt5_status, global_was_time_disabled
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
@@ -502,7 +521,7 @@ def poller_thread():
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
             try:
-                c.execute("SELECT id, name, path, symbol_suffix, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier FROM instances")
+                c.execute("SELECT id, name, path, symbol_suffix, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target FROM instances")
             except sqlite3.OperationalError:
                 try:
                     c.execute("SELECT id, name, path, symbol_suffix, group_name FROM instances")
@@ -538,6 +557,85 @@ def poller_thread():
                 
             if instances:
                 notify_clients("risk_data", json.dumps(risk_payload))
+                
+                global last_summary_date
+                current_date_str = datetime.utcnow().strftime("%Y-%m-%d")
+                online_ids = set()
+                
+                for r in risk_payload:
+                    inst_id = r["id"]
+                    inst_name = r["name"]
+                    online_ids.add(inst_id)
+                    
+                    drawdown_pct = r.get("drawdown_pct", 0.0)
+                    alert_dd_limit = r.get("alert_drawdown_limit", 2.0)
+                    alert_profit_target = r.get("alert_daily_profit_target", 0.0)
+                    
+                    current_tickets = set(p["ticket"] for p in r.get("positions", []))
+                    if inst_id in active_positions_cache:
+                        closed_tickets = active_positions_cache[inst_id] - current_tickets
+                        for t in closed_tickets:
+                            send_telegram_message(f"🔒 Trade {t} on {inst_name} Closed")
+                    active_positions_cache[inst_id] = current_tickets
+                    
+                    if alert_dd_limit > 0:
+                        if drawdown_pct >= alert_dd_limit:
+                            if not drawdown_alert_state.get(inst_id, False):
+                                send_telegram_message(f"⚠️ Drawdown Warning: {inst_name} reached {drawdown_pct:.2f}% (Limit: {alert_dd_limit}%)")
+                                drawdown_alert_state[inst_id] = True
+                        elif drawdown_pct < alert_dd_limit - 0.5:
+                            drawdown_alert_state[inst_id] = False
+                            
+                    unrealized_profit = r.get("equity", 0.0) - r.get("balance", 0.0)
+                    if alert_profit_target > 0 and unrealized_profit >= alert_profit_target:
+                        if daily_profit_alert_state.get(inst_id) != current_date_str:
+                            send_telegram_message(f"🎯 Daily Profit Target Reached! {inst_name} has unrealized profit of ${unrealized_profit:.2f}.")
+                            daily_profit_alert_state[inst_id] = current_date_str
+                            
+                for inst in instances:
+                    inst_id = inst[0]
+                    inst_name = inst[1]
+                    if inst_id not in online_ids:
+                        connection_fail_count[inst_id] = connection_fail_count.get(inst_id, 0) + 1
+                        if connection_fail_count[inst_id] == 240:
+                            send_telegram_message(f"🔌 Connection Issue: {inst_name} has been offline for 2 minutes.")
+                    else:
+                        if connection_fail_count.get(inst_id, 0) >= 240:
+                            send_telegram_message(f"✅ Connection Restored: {inst_name} is back online.")
+                        connection_fail_count[inst_id] = 0
+                        
+                if last_summary_date and last_summary_date != current_date_str:
+                    summary_msg = "📊 **Daily Summary**\n"
+                    total_profit = 0
+                    for r in risk_payload:
+                        profit = r.get("realized_gains", {}).get("yesterday", 0.0)
+                        summary_msg += f"- {r['name']}: ${profit:.2f}\n"
+                        total_profit += profit
+                    summary_msg += f"\nTotal: ${total_profit:.2f}"
+                    send_telegram_message(summary_msg)
+                    
+                    if datetime.utcnow().weekday() == 5:
+                        summary_msg = "📊 **Weekly Summary**\n"
+                        total_profit = 0
+                        for r in risk_payload:
+                            profit = r.get("realized_gains", {}).get("week", 0.0)
+                            summary_msg += f"- {r['name']}: ${profit:.2f}\n"
+                            total_profit += profit
+                        summary_msg += f"\nTotal: ${total_profit:.2f}"
+                        send_telegram_message(summary_msg)
+                        
+                    if datetime.utcnow().day == 1:
+                        summary_msg = "📊 **Monthly Summary**\n"
+                        total_profit = 0
+                        for r in risk_payload:
+                            profit = r.get("realized_gains", {}).get("last_month", 0.0)
+                            summary_msg += f"- {r['name']}: ${profit:.2f}\n"
+                            total_profit += profit
+                        summary_msg += f"\nTotal: ${total_profit:.2f}"
+                        send_telegram_message(summary_msg)
+                
+                if last_summary_date != current_date_str:
+                    last_summary_date = current_date_str
             
             c.execute("SELECT disable_time_start, disable_time_end FROM global_settings WHERE id = 1")
             global_row = c.fetchone()
@@ -645,7 +743,7 @@ def api_instances():
     
     if request.method == 'GET':
         try:
-            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier FROM instances ORDER BY id ASC")
+            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target FROM instances ORDER BY id ASC")
         except sqlite3.OperationalError:
             try:
                 c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name FROM instances ORDER BY id ASC")
@@ -687,7 +785,9 @@ def api_instances():
                 "copier_risk_type": copier_risk_type,
                 "copier_fixed_lot": copier_fixed_lot,
                 "copier_risk_usd": copier_risk_usd,
-                "copier_risk_multiplier": copier_risk_multiplier
+                "copier_risk_multiplier": copier_risk_multiplier,
+                "alert_drawdown_limit": r[15] if len(r) > 15 else 2.0,
+                "alert_daily_profit_target": r[16] if len(r) > 16 else 0.0
             })
         conn.close()
         return jsonify(instances)
@@ -702,6 +802,8 @@ def api_instances():
         accepted_timeframe = data.get('accepted_timeframe', 'all')
         profit_limit = float(data.get('profit_limit', 0))
         group_name = data.get('group_name', 'Ungrouped')
+        alert_drawdown_limit = float(data.get('alert_drawdown_limit', 2.0))
+        alert_daily_profit_target = float(data.get('alert_daily_profit_target', 0.0))
         import time
         profit_limit_start_time = int(time.time())
         
@@ -710,7 +812,7 @@ def api_instances():
             return jsonify({"error": "Name and path required"}), 400
             
         try:
-            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name))
+            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target))
         except sqlite3.OperationalError:
             try:
                 c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time))
@@ -733,13 +835,15 @@ def api_instances():
         accepted_timeframe = data.get('accepted_timeframe', 'all')
         profit_limit = float(data.get('profit_limit', 0))
         group_name = data.get('group_name', 'Ungrouped')
+        alert_drawdown_limit = float(data.get('alert_drawdown_limit', 2.0))
+        alert_daily_profit_target = float(data.get('alert_daily_profit_target', 0.0))
         
         if not instance_id or not name or not path:
             conn.close()
             return jsonify({"error": "ID, name and path required"}), 400
             
         try:
-            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=?, group_name=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, group_name, instance_id))
+            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=?, group_name=?, alert_drawdown_limit=?, alert_daily_profit_target=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, group_name, alert_drawdown_limit, alert_daily_profit_target, instance_id))
         except sqlite3.OperationalError:
             try:
                 c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, instance_id))

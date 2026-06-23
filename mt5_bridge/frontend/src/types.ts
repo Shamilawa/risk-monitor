@@ -34,4 +34,6 @@ export interface Instance {
   profit_limit?: number;
   risk_usd?: number;
   group_name?: string;
+  alert_drawdown_limit?: number;
+  alert_daily_profit_target?: number;
 }
