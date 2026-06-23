@@ -1470,110 +1470,17 @@ def api_performance():
         "trades": trades
     })
 
-@flask_app.route('/api/story_dates', methods=['GET'])
-def api_story_dates():
+@flask_app.route('/api/review_dates', methods=['GET'])
+def api_review_dates():
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
-    c.execute("SELECT DISTINCT date(created_at) FROM trade_groups WHERE created_at IS NOT NULL ORDER BY date(created_at) DESC")
+    c.execute("SELECT DISTINCT date(datetime(COALESCE(local_time, time), 'unixepoch')) FROM trading_log ORDER BY date(datetime(COALESCE(local_time, time), 'unixepoch')) DESC")
     rows = c.fetchall()
     conn.close()
     
     dates = [r[0] for r in rows if r[0]]
     return jsonify({"dates": dates})
 
-@flask_app.route('/api/story_notes', methods=['GET'])
-def api_story_notes():
-    date_str = request.args.get('date')
-    instance_id = request.args.get('instance_id', 'all')
-    if not date_str:
-        return jsonify({"error": "date parameter is required"}), 400
-        
-    conn = sqlite3.connect('trades.db')
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    if instance_id != 'all':
-        c.execute("""
-            SELECT * FROM trade_groups 
-            WHERE date(created_at) = ? AND instance_id = ?
-            ORDER BY created_at ASC
-        """, (date_str, instance_id))
-    else:
-        c.execute("""
-            SELECT * FROM trade_groups 
-            WHERE date(created_at) = ? 
-            ORDER BY created_at ASC
-        """, (date_str,))
-    trade_groups = c.fetchall()
-    
-    # Pre-calculate Magic Number Profits
-    c.execute("""
-        SELECT magic, SUM(profit) as net_profit, COUNT(*) as trades
-        FROM trading_log 
-        GROUP BY magic
-    """)
-    magic_profits = {row['magic']: row['net_profit'] for row in c.fetchall()}
-    
-    # Pre-calculate individual ticket profits grouped by magic (ordered by time)
-    c.execute("SELECT magic, profit FROM trading_log ORDER BY time ASC")
-    magic_deals = {}
-    for row in c.fetchall():
-        m = row['magic']
-        if m not in magic_deals:
-            magic_deals[m] = []
-        magic_deals[m].append(row['profit'])
-    
-    conn.close()
-    
-    total_profit = 0
-    total_trades = len(trade_groups)
-    win_trades = 0
-    loss_trades = 0
-    
-    stories = []
-    
-    for idx, tg in enumerate(trade_groups):
-        magic = tg['magic_number']
-        pl = magic_profits.get(magic, 0)
-        
-        deals = magic_deals.get(magic, [])
-        t1_pl = deals[0] if len(deals) > 0 else None
-        t2_pl = deals[1] if len(deals) > 1 else None
-        
-        if pl > 0:
-            win_trades += 1
-        elif pl < 0:
-            loss_trades += 1
-            
-        total_profit += pl
-        
-        story = {
-            'id': idx + 1,
-            'magic': magic,
-            'time': tg['created_at'].split(' ')[1] if tg['created_at'] else "Unknown",
-            'mode': tg['execution_mode'] or "Unknown",
-            'symbol': tg['symbol'],
-            'action': tg['action'],
-            'entry': tg['entry_price'],
-            'sl': tg['sl'],
-            'tp1': tg['tp1'],
-            'tp2': tg['tp2'],
-            'timeframe': tg['signal_timeframe'] or "Unknown",
-            'status': tg['status'],
-            'pl': round(pl, 2),
-            't1_pl': round(t1_pl, 2) if t1_pl is not None else None,
-            't2_pl': round(t2_pl, 2) if t2_pl is not None else None
-        }
-        stories.append(story)
-        
-    summary = {
-        'total_profit': round(total_profit, 2),
-        'total_trades': total_trades,
-        'win_trades': win_trades,
-        'loss_trades': loss_trades
-    }
-    
-    return jsonify({"summary": summary, "stories": stories})
 
 @flask_app.route('/signal_alert.wav')
 def signal_alert():

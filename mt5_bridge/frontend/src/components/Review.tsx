@@ -44,33 +44,6 @@ interface PerformanceTrade {
   local_time: number;
 }
 
-interface StoryItem {
-  id: number;
-  magic: number;
-  time: string;
-  mode: string;
-  symbol: string;
-  action: string;
-  entry: number;
-  sl: number;
-  tp1: number;
-  tp2: number;
-  timeframe: string;
-  status: string;
-  pl: number;
-  t1_pl: number | null;
-  t2_pl: number | null;
-}
-
-interface StoryNotesData {
-  summary: {
-    total_profit: number;
-    total_trades: number;
-    win_trades: number;
-    loss_trades: number;
-  };
-  stories: StoryItem[];
-}
 
 const Review = () => {
   const storeInstances = useStore((state) => state.instances || []);
@@ -89,15 +62,11 @@ const Review = () => {
   const [trades, setTrades] = useState<PerformanceTrade[]>([]);
   const [isLoadingPerf, setIsLoadingPerf] = useState(false);
 
-  // Story Notes Data States
-  const [storyData, setStoryData] = useState<StoryNotesData | null>(null);
-  const [isLoadingStory, setIsLoadingStory] = useState(false);
-
   // Fetch dates on mount
   useEffect(() => {
     const fetchDates = async () => {
       try {
-        const res = await fetch('/api/story_dates');
+        const res = await fetch('/api/review_dates');
         const json = await res.json();
         if (json.dates && json.dates.length > 0) {
           setAvailableDates(json.dates);
@@ -150,27 +119,7 @@ const Review = () => {
       }
     };
 
-    const loadStoryNotes = async () => {
-      setIsLoadingStory(true);
-      try {
-        const url = `/api/story_notes?date=${selectedDate}&instance_id=${selectedInstance}`;
-        const res = await fetch(url);
-        const json = await res.json();
-        if (json.summary && json.stories) {
-          setStoryData(json);
-        } else {
-          setStoryData(null);
-        }
-      } catch (err) {
-        console.error('Error loading story notes:', err);
-        setStoryData(null);
-      } finally {
-        setIsLoadingStory(false);
-      }
-    };
-
     loadPerformance();
-    loadStoryNotes();
   }, [selectedDate, selectedInstance]);
 
   // Sync logs mutation
@@ -289,19 +238,10 @@ const Review = () => {
     },
   };
 
-  const getReportGrade = (wr: number, tradesCount: number) => {
-    if (tradesCount === 0) return { letter: '--', desc: 'No trades recorded.' };
-    if (wr >= 75) return { letter: 'A+', desc: 'Outstanding execution and win profile.' };
-    if (wr >= 60) return { letter: 'A', desc: 'Highly profitable routing window.' };
-    if (wr >= 50) return { letter: 'B', desc: 'Positive expectancy maintained.' };
-    if (wr >= 40) return { letter: 'C', desc: 'Sub-optimal strategy parameters.' };
-    return { letter: 'F', desc: 'Critical drawdown threshold exceeded.' };
-  };
 
-  const grade = getReportGrade(metrics.win_rate, metrics.total_trades);
 
   return (
-    <div className="workspace workspace-review" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', padding: '4px', height: 'calc(100vh - 36px)', overflow: 'hidden' }}>
+    <div className="workspace workspace-review" style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '4px', height: 'calc(100vh - 36px)', overflow: 'hidden' }}>
       
       {/* Left Pane: Analytics Desk */}
       <section className="pane" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -443,170 +383,6 @@ const Review = () => {
                 )}
               </tbody>
             </table>
-          </div>
-
-        </div>
-      </section>
-
-      {/* Right Pane: Report Chronology Sheet */}
-      <section className="pane" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div className="pane-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
-          <span>Chronological Audit Log</span>
-          <button className="btn-toolbar" style={{ borderColor: 'var(--border-color)' }} onClick={() => window.print()}>
-            Export PDF (Print)
-          </button>
-        </div>
-        
-        <div className="pane-content" style={{ padding: '15px', background: 'var(--bg-app)', flexGrow: 1, overflowY: 'auto' }}>
-          
-          <div className="a4-sheet" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-color)', padding: '20px', minHeight: '100%', fontFamily: 'monospace', display: 'flex', flexDirection: 'column' }}>
-            
-            {/* Report Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '15px' }}>
-              <div>
-                <span style={{ fontSize: '8px', fontWeight: 'bold', letterSpacing: '1px', color: 'var(--text-muted)' }}>REPORT ID: VTC-{selectedDate.replace(/-/g, '')}</span>
-                <h2 style={{ margin: '3px 0 0 0', fontSize: '15px', color: 'var(--text-main)', fontWeight: 'bold' }}>DAILY SIGNAL & EXECUTION AUDIT</h2>
-              </div>
-              <div style={{ textAlign: 'right' }}>
-                <span style={{ fontSize: '8px', color: 'var(--text-muted)' }}>STATUS: SYSTEM VERIFIED</span>
-                <div style={{ fontSize: '9px', color: 'var(--text-main)', marginTop: '2px' }}>
-                  {new Date().toLocaleTimeString('en-US', { hour12: false })}
-                </div>
-              </div>
-            </div>
-
-            {/* Meta Metadata Header */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px', background: 'var(--bg-toolbar)', border: '1px solid var(--border-color)', padding: '6px', fontSize: '9px', marginBottom: '15px' }}>
-              <div>
-                <div style={{ color: 'var(--text-muted)', fontSize: '8px' }}>DATE</div>
-                <strong style={{ color: 'var(--text-main)' }}>{selectedDate}</strong>
-              </div>
-              <div>
-                <div style={{ color: 'var(--text-muted)', fontSize: '8px' }}>CHANNEL</div>
-                <strong style={{ color: 'var(--text-main)' }}>{selectedInstance === 'all' ? 'All Channels' : storeInstances.find(i => i.id.toString() === selectedInstance)?.name || 'Filtered'}</strong>
-              </div>
-              <div>
-                <div style={{ color: 'var(--text-muted)', fontSize: '8px' }}>NET SUM</div>
-                <strong style={{ color: storyData?.summary.total_profit && storyData.summary.total_profit >= 0 ? 'var(--color-buy)' : 'var(--color-sell)' }}>
-                  ${storyData?.summary.total_profit.toFixed(2) || '0.00'}
-                </strong>
-              </div>
-              <div>
-                <div style={{ color: 'var(--text-muted)', fontSize: '8px' }}>WIN RATE</div>
-                <strong style={{ color: 'var(--text-main)' }}>
-                  {storyData?.summary.total_trades && storyData.summary.total_trades > 0 
-                    ? ((storyData.summary.win_trades / storyData.summary.total_trades) * 100).toFixed(1) + '%'
-                    : '0.0%'}
-                </strong>
-              </div>
-            </div>
-
-            <div style={{ borderTop: '2px double var(--border-color)', marginBottom: '15px' }}></div>
-
-            {/* Performance metrics breakdown */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.8fr', gap: '15px', marginBottom: '20px' }}>
-              <div>
-                <h4 style={{ fontSize: '10px', color: 'var(--text-main)', borderBottom: '1px solid var(--border-color)', paddingBottom: '3px', marginBottom: '6px' }}>I. METRIC ANALYSIS</h4>
-                <table style={{ width: '100%', fontSize: '9.5px', borderCollapse: 'collapse' }}>
-                  <tbody>
-                    <tr style={{ borderBottom: '1px solid var(--border-color)' }}>
-                      <td style={{ padding: '3px 0', color: 'var(--text-muted)' }}>Net profit/loss of signals</td>
-                      <td style={{ textAlign: 'right', fontWeight: 'bold', color: metrics.total_profit >= 0 ? 'var(--color-buy)' : 'var(--color-sell)' }}>
-                        ${metrics.total_profit.toFixed(2)}
-                      </td>
-                    </tr>
-                    <tr style={{ borderBottom: '1px solid var(--border-color)' }}>
-                      <td style={{ padding: '3px 0', color: 'var(--text-muted)' }}>Total executions mapped</td>
-                      <td style={{ textAlign: 'right', color: 'var(--text-main)' }}>{storyData?.summary.total_trades || 0}</td>
-                    </tr>
-                    <tr style={{ borderBottom: '1px solid var(--border-color)' }}>
-                      <td style={{ padding: '3px 0', color: 'var(--text-muted)' }}>Profitable signal groups</td>
-                      <td style={{ textAlign: 'right', color: 'var(--color-buy)' }}>{storyData?.summary.win_trades || 0}</td>
-                    </tr>
-                    <tr style={{ borderBottom: '1px solid var(--border-color)' }}>
-                      <td style={{ padding: '3px 0', color: 'var(--text-muted)' }}>Unprofitable signal groups</td>
-                      <td style={{ textAlign: 'right', color: 'var(--color-sell)' }}>{storyData?.summary.loss_trades || 0}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Visual Performance Card */}
-              <div style={{ border: '1px solid var(--border-color)', background: 'var(--bg-toolbar)', borderRadius: '2px', padding: '8px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center' }}>
-                <span style={{ fontSize: '8px', color: 'var(--text-muted)', fontWeight: 'bold' }}>PERFORMANCE RATING</span>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: metrics.win_rate >= 50 ? 'var(--color-buy)' : 'var(--color-sell)', margin: '4px 0' }}>
-                  {grade.letter}
-                </div>
-                <span style={{ fontSize: '8px', color: 'var(--text-muted)', lineHeight: '1.2' }}>{grade.desc}</span>
-              </div>
-            </div>
-
-            {/* Chronological Signals log */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-              <h4 style={{ fontSize: '10px', color: 'var(--text-main)', borderBottom: '1px solid var(--border-color)', paddingBottom: '3px', marginBottom: '8px' }}>II. SIGNAL TIMELINE CHRONOLOGY</h4>
-              
-              <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px', paddingRight: '4px' }}>
-                {isLoadingStory ? (
-                  <div style={{ color: 'var(--text-muted)', fontSize: '10px', padding: '15px 0', textAlign: 'center', fontStyle: 'italic' }}>
-                    Reading signal logs...
-                  </div>
-                ) : !storyData || storyData.stories.length === 0 ? (
-                  <div style={{ color: 'var(--text-muted)', fontSize: '10px', padding: '15px 0', textAlign: 'center', fontStyle: 'italic' }}>
-                    No signals or executions logged for the selected date.
-                  </div>
-                ) : (
-                  storyData.stories.map((s) => {
-                    const isWin = s.pl >= 0;
-                    const statusColor = s.status === 'FAILED_EXECUTION' ? 'var(--color-sell)' : s.status === 'CANCELLED' ? 'var(--text-muted)' : 'var(--color-buy)';
-                    
-                    return (
-                      <div key={s.id} style={{ border: '1px solid var(--border-color)', background: 'var(--bg-toolbar)', padding: '6px' }}>
-                        {/* Title Row */}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px dashed var(--border-color)', paddingBottom: '4px', marginBottom: '4px' }}>
-                          <div>
-                            <span style={{ color: 'var(--text-muted)', fontSize: '8px' }}>[{s.time}]</span>{' '}
-                            <strong style={{ color: 'var(--text-main)' }}>{s.symbol}</strong>{' '}
-                            <span className={s.action === 'BUY' ? 'bdg-buy' : 'bdg-sell'} style={{ padding: '0 4px', fontSize: '8px', borderRadius: '1px' }}>{s.action}</span>
-                          </div>
-                          <span style={{ fontSize: '9px', fontWeight: 'bold', color: statusColor }}>
-                            {s.status.replace(/_/g, ' ')}
-                          </span>
-                        </div>
-
-                        {/* Parameter details */}
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px', fontSize: '8.5px', color: 'var(--text-muted)', margin: '4px 0' }}>
-                          <div>ENTRY: <strong style={{ color: 'var(--text-main)' }}>{s.entry}</strong></div>
-                          <div>SL: <strong style={{ color: 'var(--text-main)' }}>{s.sl}</strong></div>
-                          <div>TP1: <strong style={{ color: 'var(--text-main)' }}>{s.tp1}</strong></div>
-                          <div>TP2: <strong style={{ color: 'var(--text-main)' }}>{s.tp2}</strong></div>
-                        </div>
-
-                        {/* Result Row */}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '9px', marginTop: '4px', borderTop: '1px dotted var(--border-color)', paddingTop: '4px' }}>
-                          <div>
-                            <span>Timeframe: <strong>{s.timeframe}</strong></span>
-                            <span style={{ marginLeft: '10px' }}>Magic: <strong>#{s.magic}</strong></span>
-                          </div>
-                          <div>
-                            NET RESULT:{' '}
-                            <strong style={{ color: isWin ? 'var(--color-buy)' : 'var(--color-sell)' }}>
-                              {isWin ? '+' : ''}${s.pl.toFixed(2)}
-                            </strong>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div style={{ marginTop: 'auto', borderTop: '1px dashed var(--border-color)', paddingTop: '6px', display: 'flex', justifyContent: 'space-between', fontSize: '8px', color: 'var(--text-muted)' }}>
-              <span>VTC BRIDGE AUDIT DOCUMENT SYSTEM</span>
-              <span>CONFIDENTIAL DEEP COPIER LOG REPORT</span>
-            </div>
-
           </div>
 
         </div>
