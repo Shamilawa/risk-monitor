@@ -300,7 +300,7 @@ const Copier = () => {
       alert('Symbol mapping for this TV ticker already exists.');
       return;
     }
-    setTempMappings((prev) => [...prev, { tv: newTvSymbol.toUpperCase(), mt5: newMt5Symbol }]);
+    setTempMappings((prev) => [...prev, { tv: newTvSymbol, mt5: newMt5Symbol }]);
     setNewTvSymbol('');
     setNewMt5Symbol('');
   };
