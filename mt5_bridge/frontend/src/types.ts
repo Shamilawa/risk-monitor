@@ -36,4 +36,35 @@ export interface Instance {
   group_name?: string;
   alert_drawdown_limit?: number;
   alert_daily_profit_target?: number;
+  account_type?: string;
+}
+
+export interface NewsWindow {
+  title: string;
+  currency: string;
+  event_time: number;
+  start: number;
+  end: number;
+}
+
+export interface NewsToday {
+  status: 'AUTO' | 'MANUAL' | 'FAILED';
+  date: string;
+  fetched_at: number;
+  events: NewsWindow[];
+}
+
+export interface BlockedAction {
+  id: number;
+  instance_id: number;
+  instance_name: string;
+  action_type: 'CLOSE' | 'MODIFY';
+  ticket: number;
+  symbol: string;
+  volume?: number;
+  sl?: number;
+  tp?: number;
+  reason: string;
+  blocked_at: number;
+  status: 'PENDING' | 'EXECUTED' | 'DISMISSED';
 }

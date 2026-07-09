@@ -1,11 +1,27 @@
 import { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { useStore } from '../store/useStore';
+import type { NewsToday } from '../types';
+import { findActiveWindow } from '../utils/news';
+
+const fetchNewsToday = async (): Promise<NewsToday> => {
+  const res = await fetch('/api/news/today');
+  return res.json();
+};
 
 const Header = () => {
   const mt5Status = useStore((state) => state.mt5Status);
   const instances = useStore((state) => state.instances || []);
   const [currentDate, setCurrentDate] = useState('');
+
+  const { data: newsToday } = useQuery<NewsToday>({
+    queryKey: ['news', 'today'],
+    queryFn: fetchNewsToday,
+    refetchInterval: 30000,
+  });
+  const newsFailed = newsToday?.status === 'FAILED';
+  const activeBlackout = newsToday ? findActiveWindow(newsToday.events) : undefined;
 
   useEffect(() => {
     const updateDate = () => {
@@ -78,7 +94,17 @@ const Header = () => {
         </div>
       </div>
 
-      <div className="th-right" style={{ display: 'flex', alignItems: 'center' }}>
+      <div className="th-right" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        {(newsFailed || activeBlackout) && (
+          <div className="th-status-box" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div className="led-indicator">
+              <span className="led offline" style={{ background: newsFailed ? '#e74c3c' : '#f39c12' }}></span>
+            </div>
+            <span className="status-text" style={{ color: newsFailed ? '#e74c3c' : '#f39c12', fontWeight: 'bold' }}>
+              {newsFailed ? 'NEWS FEED DOWN' : `BLACKOUT: ${activeBlackout?.currency} ${activeBlackout?.title}`}
+            </span>
+          </div>
+        )}
         <div className="th-status-box" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <div className="led-indicator">
             <span className={`led ${mt5Status.online ? 'online' : 'offline'}`}></span>

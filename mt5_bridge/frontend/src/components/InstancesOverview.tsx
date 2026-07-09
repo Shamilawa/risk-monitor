@@ -1,16 +1,30 @@
 import { useState, useEffect, useRef } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useStore } from '../store/useStore';
-import type { Instance } from '../types';
+import type { Instance, NewsToday } from '../types';
 import { FlashCell } from './FlashCell';
+import { findActiveWindow } from '../utils/news';
 
 interface LeaderLineInstance {
   remove: () => void;
   position: () => void;
 }
 
+const fetchNewsToday = async (): Promise<NewsToday> => {
+  const res = await fetch('/api/news/today');
+  return res.json();
+};
+
 const InstancesOverview = () => {
   const instances = useStore((state) => state.instances || []);
   const [selectedPeriods, setSelectedPeriods] = useState<Record<number, string>>({});
+
+  const { data: newsToday } = useQuery<NewsToday>({
+    queryKey: ['news', 'today'],
+    queryFn: fetchNewsToday,
+    refetchInterval: 30000,
+  });
+  const newsBlackoutActive = Boolean(newsToday?.status === 'FAILED' || (newsToday && findActiveWindow(newsToday.events)));
 
   const activeLinesRef = useRef<Record<string, LeaderLineInstance>>({});
   const prevConnectionsKeyRef = useRef<string>('');
@@ -152,6 +166,15 @@ const InstancesOverview = () => {
       flexStyle = { width: '220px', flexShrink: 0 };
     }
 
+    const propFirmBadge = inst.account_type === 'PROPFIRM' ? (
+      <>
+        <span className="badge-dense" style={{ background: 'rgba(231, 76, 60, 0.15)', color: '#e74c3c', marginLeft: '5px', fontSize: '9px', verticalAlign: 'middle' }}>🏦 PROPFIRM</span>
+        {newsBlackoutActive && (
+          <span className="badge-dense" style={{ background: 'rgba(231, 76, 60, 0.3)', color: '#e74c3c', marginLeft: '5px', fontSize: '9px', verticalAlign: 'middle', fontWeight: 'bold' }}>⛔ BLACKOUT</span>
+        )}
+      </>
+    ) : null;
+
     let copierInfoHtml = null;
     if (inst.copier_role === 'CONSUMER') {
       let riskStr = '';
@@ -189,6 +212,7 @@ const InstancesOverview = () => {
           <div style={{ display: 'flex', alignItems: 'center' }}>
             <strong style={{ color: 'var(--text-main)', fontSize: '11px' }}>{inst.name}</strong>
             {roleBadge}
+            {propFirmBadge}
           </div>
         </div>
         <div style={{ padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '10px' }}>

@@ -1,14 +1,51 @@
 import argparse
 import time
 import json
+import threading
+import urllib.request
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 import zmq
+import news_calendar
 
 # Attempt to import mt5, handle gracefully if not available in this env
 try:
     import MetaTrader5 as mt5
 except ImportError:
     mt5 = None
+
+
+def notify_ui(msg):
+    def _send():
+        try:
+            data = urllib.parse.urlencode({"msg": msg}).encode()
+            req = urllib.request.Request("http://127.0.0.1:5000/api/internal_notify", data=data)
+            urllib.request.urlopen(req, timeout=2)
+        except Exception:
+            pass
+    threading.Thread(target=_send).start()
+
+
+def report_blocked_action(args, action_type, ticket, symbol, reason, volume=None, sl=None, tp=None):
+    """Tells the backend a CLOSE/MODIFY was blocked by a news blackout so it
+    can be queued in the UI's Blocked Actions table for manual resolution
+    (the master's own event is fire-and-forget over ZMQ, no auto-replay)."""
+    def _send():
+        try:
+            payload = {
+                "instance_id": args.id, "instance_name": f"Instance {args.id}",
+                "action_type": action_type, "ticket": ticket, "symbol": symbol,
+                "volume": volume, "sl": sl, "tp": tp, "reason": reason,
+            }
+            data = json.dumps(payload).encode()
+            req = urllib.request.Request(
+                "http://127.0.0.1:5000/api/news/blocked_actions", data=data,
+                headers={"Content-Type": "application/json"}
+            )
+            urllib.request.urlopen(req, timeout=2)
+        except Exception:
+            pass
+    threading.Thread(target=_send).start()
 
 def provider_loop(push_socket):
     print("[PROVIDER] Starting polling loop...")
@@ -157,20 +194,7 @@ def execute_trade(action, symbol, volume, sl, tp):
         return None
     else:
         print(f"[CONSUMER] Order executed successfully: Ticket {result.order}")
-        
-        def notify_ui():
-            try:
-                import urllib.request
-                import urllib.parse
-                data = urllib.parse.urlencode({"msg": f"✅ Copier Trade Executed!\nSymbol: {symbol}\nAction: {action.upper()}\nVolume: {volume}\nTicket: {result.order}"}).encode()
-                req = urllib.request.Request("http://127.0.0.1:5000/api/internal_notify", data=data)
-                urllib.request.urlopen(req, timeout=2)
-            except Exception as e:
-                pass
-                
-        import threading
-        threading.Thread(target=notify_ui).start()
-        
+        notify_ui(f"✅ Copier Trade Executed!\nSymbol: {symbol}\nAction: {action.upper()}\nVolume: {volume}\nTicket: {result.order}")
         return result.order
 
 def close_trade(ticket, volume):
@@ -239,7 +263,20 @@ def modify_trade(ticket, sl, tp):
 def consumer_loop(sub_socket, args):
     print(f"[CONSUMER] Subscribed and waiting for signals. Risk: {args.risk_type}")
     ticket_map = load_ticket_map(args.id)
-    
+    is_propfirm = args.account_type == "PROPFIRM"
+    news_cache = {}
+
+    def check_blocked(symbol):
+        """Only touched for PropFirm instances. Returns a human-readable
+        block reason, or None if not currently blocked."""
+        windows_payload = news_calendar.get_cached_windows(news_cache)
+        blocked, window = news_calendar.is_blocked_now(symbol, windows_payload)
+        if not blocked:
+            return None
+        if window is None:
+            return "news feed FAILED (fail-closed)"
+        return f"{window['currency']} news blackout: {window['title']}"
+
     while True:
         try:
             msg = sub_socket.recv_json()
@@ -259,7 +296,14 @@ def consumer_loop(sub_socket, args):
                 if symbol in mapping:
                     print(f"[CONSUMER] Mapping symbol {symbol} -> {mapping[symbol]}")
                     symbol = mapping[symbol]
-                    
+
+                if is_propfirm:
+                    reason = check_blocked(symbol)
+                    if reason:
+                        print(f"[CONSUMER] BLOCKED NEW_TRADE {symbol}: {reason}")
+                        notify_ui(f"🚫 BLOCKED (PropFirm News Blackout): NEW {msg.get('action')} {symbol} — {reason}")
+                        continue
+
                 action = msg["action"]
                 provider_volume = msg["volume"]
                 provider_price = msg["price"]
@@ -304,6 +348,16 @@ def consumer_loop(sub_socket, args):
                     sub_ticket = ticket_map[pt]
                     pos = mt5.positions_get(ticket=sub_ticket)
                     if pos:
+                        if is_propfirm:
+                            reason = check_blocked(pos[0].symbol)
+                            if reason:
+                                print(f"[CONSUMER] BLOCKED CLOSE_TRADE {pos[0].symbol} ticket {sub_ticket}: {reason}")
+                                notify_ui(
+                                    f"🚫 BLOCKED (PropFirm News Blackout): CLOSE {pos[0].symbol} ticket {sub_ticket} — {reason}. "
+                                    f"⚠️ Provider closed this position but the mirror stays OPEN — resolve it from the Blocked Actions panel."
+                                )
+                                report_blocked_action(args, "CLOSE", sub_ticket, pos[0].symbol, reason, volume=pos[0].volume)
+                                continue
                         close_trade(sub_ticket, pos[0].volume)
                 else:
                     print(f"[CONSUMER] Close ignored: provider_ticket {pt} not in map.")
@@ -313,6 +367,18 @@ def consumer_loop(sub_socket, args):
                 pt = str(msg.get("provider_ticket"))
                 if pt in ticket_map:
                     sub_ticket = ticket_map[pt]
+                    if is_propfirm:
+                        pos = mt5.positions_get(ticket=sub_ticket)
+                        if pos:
+                            reason = check_blocked(pos[0].symbol)
+                            if reason:
+                                print(f"[CONSUMER] BLOCKED MODIFY_TRADE {pos[0].symbol} ticket {sub_ticket}: {reason}")
+                                notify_ui(
+                                    f"🚫 BLOCKED (PropFirm News Blackout): MODIFY {pos[0].symbol} ticket {sub_ticket} — {reason}. "
+                                    f"Resolve it from the Blocked Actions panel once the window has passed."
+                                )
+                                report_blocked_action(args, "MODIFY", sub_ticket, pos[0].symbol, reason, sl=msg["sl"], tp=msg["tp"])
+                                continue
                     modify_trade(sub_ticket, msg["sl"], msg["tp"])
                 else:
                     print(f"[CONSUMER] Modify ignored: provider_ticket {pt} not in map.")
@@ -330,7 +396,8 @@ if __name__ == "__main__":
     parser.add_argument("--risk_usd", type=float, default=100.0)
     parser.add_argument("--risk_mult", type=float, default=1.0)
     parser.add_argument("--symbol_mapping", type=str, default='{}')
-    
+    parser.add_argument("--account_type", type=str, default="PERSONAL", choices=["PERSONAL", "PROPFIRM"])
+
     args = parser.parse_args()
     
     if mt5 is None:

@@ -16,6 +16,7 @@ import time
 import webbrowser
 import concurrent.futures
 from datetime import datetime, timedelta, timezone
+import news_calendar
 
 load_dotenv()
 
@@ -187,7 +188,10 @@ def init_db():
     try:
         c.execute("ALTER TABLE instances ADD COLUMN alert_daily_profit_target REAL DEFAULT 0.0")
     except sqlite3.OperationalError: pass
-    
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN account_type TEXT DEFAULT 'PERSONAL'")
+    except sqlite3.OperationalError: pass
+
     c.execute('''
         CREATE TABLE IF NOT EXISTS trading_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -234,7 +238,25 @@ def init_db():
         )
     ''')
     c.execute("INSERT OR IGNORE INTO global_settings (id, trade_disable, disable_time_start, disable_time_end) VALUES (1, 0, '', '')")
-    
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS blocked_copier_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instance_id INTEGER,
+            instance_name TEXT,
+            action_type TEXT,
+            ticket INTEGER,
+            symbol TEXT,
+            volume REAL,
+            sl REAL,
+            tp REAL,
+            reason TEXT,
+            blocked_at INTEGER,
+            status TEXT DEFAULT 'PENDING',
+            resolved_at INTEGER
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -390,6 +412,7 @@ def fetch_instance_data(inst):
     copier_risk_multiplier = inst[9] if len(inst) > 9 else 1.0
     alert_drawdown_limit = inst[10] if len(inst) > 10 else 2.0
     alert_daily_profit_target = inst[11] if len(inst) > 11 else 0.0
+    account_type = inst[12] if len(inst) > 12 else 'PERSONAL'
 
     try:
         with mt5_lock:
@@ -415,6 +438,7 @@ def fetch_instance_data(inst):
                 "copier_risk_multiplier": copier_risk_multiplier,
                 "alert_drawdown_limit": alert_drawdown_limit,
                 "alert_daily_profit_target": alert_daily_profit_target,
+                "account_type": account_type,
                 "positions": [],
                 "historical_equity": {"labels": [], "data": []}
             }
@@ -522,7 +546,7 @@ def poller_thread():
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
             try:
-                c.execute("SELECT id, name, path, symbol_suffix, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target FROM instances")
+                c.execute("SELECT id, name, path, symbol_suffix, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target, account_type FROM instances")
             except sqlite3.OperationalError:
                 try:
                     c.execute("SELECT id, name, path, symbol_suffix, group_name FROM instances")
@@ -744,7 +768,7 @@ def api_instances():
     
     if request.method == 'GET':
         try:
-            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target FROM instances ORDER BY id ASC")
+            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target, account_type FROM instances ORDER BY id ASC")
         except sqlite3.OperationalError:
             try:
                 c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name FROM instances ORDER BY id ASC")
@@ -788,7 +812,8 @@ def api_instances():
                 "copier_risk_usd": copier_risk_usd,
                 "copier_risk_multiplier": copier_risk_multiplier,
                 "alert_drawdown_limit": r[15] if len(r) > 15 else 2.0,
-                "alert_daily_profit_target": r[16] if len(r) > 16 else 0.0
+                "alert_daily_profit_target": r[16] if len(r) > 16 else 0.0,
+                "account_type": r[17] if len(r) > 17 else 'PERSONAL'
             })
         conn.close()
         return jsonify(instances)
@@ -805,15 +830,16 @@ def api_instances():
         group_name = data.get('group_name', 'Ungrouped')
         alert_drawdown_limit = float(data.get('alert_drawdown_limit', 2.0))
         alert_daily_profit_target = float(data.get('alert_daily_profit_target', 0.0))
+        account_type = data.get('account_type', 'PERSONAL')
         import time
         profit_limit_start_time = int(time.time())
-        
+
         if not name or not path:
             conn.close()
             return jsonify({"error": "Name and path required"}), 400
-            
+
         try:
-            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target))
+            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type))
         except sqlite3.OperationalError:
             try:
                 c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time))
@@ -823,7 +849,7 @@ def api_instances():
         conn.commit()
         new_id = c.lastrowid
         conn.close()
-        return jsonify({"id": new_id, "name": name, "path": path, "risk_usd": risk_usd, "symbol_mapping": symbol_mapping, "auto_trade": auto_trade, "accepted_timeframe": accepted_timeframe, "profit_limit": profit_limit}), 201
+        return jsonify({"id": new_id, "name": name, "path": path, "risk_usd": risk_usd, "symbol_mapping": symbol_mapping, "auto_trade": auto_trade, "accepted_timeframe": accepted_timeframe, "profit_limit": profit_limit, "account_type": account_type}), 201
         
     elif request.method == 'PUT':
         data = request.json
@@ -838,13 +864,14 @@ def api_instances():
         group_name = data.get('group_name', 'Ungrouped')
         alert_drawdown_limit = float(data.get('alert_drawdown_limit', 2.0))
         alert_daily_profit_target = float(data.get('alert_daily_profit_target', 0.0))
-        
+        account_type = data.get('account_type', 'PERSONAL')
+
         if not instance_id or not name or not path:
             conn.close()
             return jsonify({"error": "ID, name and path required"}), 400
-            
+
         try:
-            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=?, group_name=?, alert_drawdown_limit=?, alert_daily_profit_target=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, group_name, alert_drawdown_limit, alert_daily_profit_target, instance_id))
+            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=?, group_name=?, alert_drawdown_limit=?, alert_daily_profit_target=?, account_type=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, instance_id))
         except sqlite3.OperationalError:
             try:
                 c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, instance_id))
@@ -1758,7 +1785,7 @@ def copier_manager_thread():
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
             try:
-                c.execute("SELECT id, path, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, symbol_mapping FROM instances WHERE copier_role IN ('PROVIDER', 'CONSUMER')")
+                c.execute("SELECT id, path, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, symbol_mapping, account_type FROM instances WHERE copier_role IN ('PROVIDER', 'CONSUMER')")
                 active_copiers = c.fetchall()
             except sqlite3.OperationalError:
                 active_copiers = []
@@ -1788,7 +1815,8 @@ def copier_manager_thread():
                         '--fixed_lot', str(r[4]),
                         '--risk_usd', str(r[5]),
                         '--risk_mult', str(r[6]),
-                        '--symbol_mapping', str(r[7] if len(r) > 7 and r[7] else '{}')
+                        '--symbol_mapping', str(r[7] if len(r) > 7 and r[7] else '{}'),
+                        '--account_type', str(r[8] if len(r) > 8 and r[8] else 'PERSONAL')
                     ]
                     p = subprocess.Popen(cmd)
                     copier_workers[cid] = {'process': p, 'config': r}
@@ -1796,8 +1824,216 @@ def copier_manager_thread():
                     
         except Exception as e:
             logging.error(f"Copier manager error: {e}")
-            
+
         time.sleep(3)
+
+# --- NEWS BLACKOUT (PROP FIRM) ---
+
+_news_state = {"last_success_date": None, "failure_alerted_date": None}
+
+def _format_news_summary(windows, date_str):
+    lines = [f"✅ News Calendar Fetched — {len(windows)} high-impact events today ({date_str}):"]
+    if not windows:
+        lines.append("(none)")
+    for w in sorted(windows, key=lambda x: x['event_time']):
+        local_time = datetime.fromtimestamp(w['event_time']).strftime('%H:%M')
+        lines.append(f"- {local_time} {w['currency']} {w['title']}")
+    return "\n".join(lines)
+
+def _attempt_news_fetch():
+    """Returns (ok, windows). Up to 3 attempts with short backoff."""
+    for attempt in range(3):
+        try:
+            raw = news_calendar.fetch_raw_calendar()
+            high_impact = news_calendar.filter_high_impact(raw)
+            today_events = news_calendar.filter_today(high_impact)
+            return True, news_calendar.events_to_windows(today_events)
+        except Exception as e:
+            logging.error(f"News calendar fetch attempt {attempt + 1} failed: {e}")
+            if attempt < 2:
+                time.sleep(5 if attempt == 0 else 15)
+    return False, []
+
+def news_calendar_thread():
+    while True:
+        try:
+            today_str = datetime.utcnow().strftime("%Y-%m-%d")
+            if _news_state["last_success_date"] != today_str:
+                ok, windows = _attempt_news_fetch()
+                if ok:
+                    news_calendar.save_windows_file({
+                        "status": "AUTO", "date": today_str,
+                        "fetched_at": int(time.time()), "events": windows
+                    })
+                    _news_state["last_success_date"] = today_str
+                    logging.info(f"[NEWS] Fetched {len(windows)} high-impact events for {today_str}")
+                    send_telegram_message(_format_news_summary(windows, today_str))
+                else:
+                    news_calendar.save_windows_file({
+                        "status": "FAILED", "date": today_str,
+                        "fetched_at": int(time.time()), "events": []
+                    })
+                    logging.error("[NEWS] Failed to fetch news calendar after retries; PropFirm instances fail-closed.")
+                    if _news_state["failure_alerted_date"] != today_str:
+                        send_telegram_message(
+                            "❌ Failed to fetch the news calendar (3 attempts). PropFirm instances are "
+                            "BLOCKED from ALL trade copying (open/modify/close) until this is fixed. "
+                            "Please send me today's high-impact news list (title, currency, time + "
+                            "timezone) so I can enter it manually in the News panel."
+                        )
+                        _news_state["failure_alerted_date"] = today_str
+        except Exception as e:
+            logging.error(f"News calendar thread error: {e}")
+        time.sleep(60)
+
+@flask_app.route('/api/news/today', methods=['GET'])
+def api_news_today():
+    return jsonify(news_calendar.load_windows_file())
+
+@flask_app.route('/api/news/manual', methods=['POST'])
+def api_news_manual():
+    data = request.json or {}
+    entries = data.get('events', [])
+    if not entries:
+        return jsonify({"error": "No events provided"}), 400
+    windows = news_calendar.manual_events_to_windows(entries)
+    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    payload = {"status": "MANUAL", "date": today_str, "fetched_at": int(time.time()), "events": windows}
+    news_calendar.save_windows_file(payload)
+    _news_state["last_success_date"] = today_str
+    return jsonify(payload)
+
+@flask_app.route('/api/news/blocked_actions', methods=['GET', 'POST'])
+def api_news_blocked_actions():
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+
+    if request.method == 'GET':
+        status = request.args.get('status', 'PENDING')
+        c.execute("SELECT id, instance_id, instance_name, action_type, ticket, symbol, volume, sl, tp, reason, blocked_at, status FROM blocked_copier_actions WHERE status = ? ORDER BY blocked_at DESC", (status,))
+        rows = c.fetchall()
+        conn.close()
+        actions = [{
+            "id": r[0], "instance_id": r[1], "instance_name": r[2], "action_type": r[3],
+            "ticket": r[4], "symbol": r[5], "volume": r[6], "sl": r[7], "tp": r[8],
+            "reason": r[9], "blocked_at": r[10], "status": r[11]
+        } for r in rows]
+        return jsonify(actions)
+
+    data = request.json or {}
+    action_type = data.get('action_type')
+    ticket = data.get('ticket')
+    if not action_type or not ticket:
+        conn.close()
+        return jsonify({"error": "action_type and ticket required"}), 400
+    c.execute(
+        "INSERT INTO blocked_copier_actions (instance_id, instance_name, action_type, ticket, symbol, volume, sl, tp, reason, blocked_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')",
+        (data.get('instance_id'), data.get('instance_name', ''), action_type, ticket, data.get('symbol', ''),
+         data.get('volume'), data.get('sl'), data.get('tp'), data.get('reason', ''), int(time.time()))
+    )
+    conn.commit()
+    new_id = c.lastrowid
+    conn.close()
+    notify_clients("tracker_update", "update")
+    return jsonify({"id": new_id, "status": "PENDING"}), 201
+
+def _close_position_by_ticket(inst_path, ticket, volume):
+    """Single-ticket variant of close_instance_positions' order-send pattern."""
+    with mt5_lock:
+        if not mt5.initialize(path=inst_path):
+            return False, "MT5 not connected"
+        pos = mt5.positions_get(ticket=ticket)
+        if not pos:
+            return False, "Position not found"
+        p = pos[0]
+        tick = mt5.symbol_info_tick(p.symbol)
+        if not tick:
+            return False, "No tick data"
+        order_type = mt5.ORDER_TYPE_SELL if p.type == 0 else mt5.ORDER_TYPE_BUY
+        price = tick.bid if order_type == mt5.ORDER_TYPE_SELL else tick.ask
+        req = {
+            "action": mt5.TRADE_ACTION_DEAL, "symbol": p.symbol, "volume": volume or p.volume,
+            "type": order_type, "position": ticket, "price": price, "deviation": 50,
+            "magic": p.magic, "comment": "", "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        res = mt5.order_send(req)
+        if not res or res.retcode != mt5.TRADE_RETCODE_DONE:
+            req["type_filling"] = mt5.ORDER_FILLING_FOK
+            res = mt5.order_send(req)
+        if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+            return True, None
+        return False, f"retcode={res.retcode if res else 'None'}"
+
+def _modify_position_by_ticket(inst_path, ticket, sl, tp):
+    with mt5_lock:
+        if not mt5.initialize(path=inst_path):
+            return False, "MT5 not connected"
+        pos = mt5.positions_get(ticket=ticket)
+        if not pos:
+            return False, "Position not found"
+        p = pos[0]
+        req = {
+            "action": mt5.TRADE_ACTION_SLTP, "symbol": p.symbol, "position": ticket,
+            "sl": float(sl) if sl is not None else p.sl, "tp": float(tp) if tp is not None else p.tp
+        }
+        res = mt5.order_send(req)
+        if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+            return True, None
+        return False, f"retcode={res.retcode if res else 'None'}"
+
+@flask_app.route('/api/news/blocked_actions/<int:action_id>/execute', methods=['POST'])
+def api_news_blocked_action_execute(action_id):
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    c.execute("SELECT instance_id, action_type, ticket, volume, sl, tp, status FROM blocked_copier_actions WHERE id = ?", (action_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Not found"}), 404
+
+    instance_id, action_type, ticket, volume, sl, tp, status = row
+    if status != 'PENDING':
+        conn.close()
+        return jsonify({"error": f"Action already {status}"}), 400
+
+    c.execute("SELECT path FROM instances WHERE id = ?", (instance_id,))
+    inst_row = c.fetchone()
+    if not inst_row:
+        conn.close()
+        return jsonify({"error": "Instance not found"}), 404
+    inst_path = inst_row[0]
+
+    if action_type == 'CLOSE':
+        ok, err = _close_position_by_ticket(inst_path, ticket, volume)
+    elif action_type == 'MODIFY':
+        ok, err = _modify_position_by_ticket(inst_path, ticket, sl, tp)
+    else:
+        conn.close()
+        return jsonify({"error": f"Unknown action_type {action_type}"}), 400
+
+    if not ok:
+        conn.close()
+        return jsonify({"error": err}), 500
+
+    c.execute("UPDATE blocked_copier_actions SET status='EXECUTED', resolved_at=? WHERE id=?", (int(time.time()), action_id))
+    conn.commit()
+    conn.close()
+    notify_clients("tracker_update", "update")
+    return jsonify({"status": "EXECUTED"})
+
+@flask_app.route('/api/news/blocked_actions/<int:action_id>/dismiss', methods=['POST'])
+def api_news_blocked_action_dismiss(action_id):
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    c.execute("UPDATE blocked_copier_actions SET status='DISMISSED', resolved_at=? WHERE id=? AND status='PENDING'", (int(time.time()), action_id))
+    changed = c.rowcount
+    conn.commit()
+    conn.close()
+    if changed == 0:
+        return jsonify({"error": "Not found or already resolved"}), 404
+    notify_clients("tracker_update", "update")
+    return jsonify({"status": "DISMISSED"})
 
 @flask_app.route('/', defaults={'path': ''})
 @flask_app.route('/<path:path>')
@@ -1822,6 +2058,7 @@ def main():
     threading.Thread(target=poller_thread, daemon=True).start()
     threading.Thread(target=zmq_router_thread, daemon=True).start()
     threading.Thread(target=copier_manager_thread, daemon=True).start()
+    threading.Thread(target=news_calendar_thread, daemon=True).start()
     
     # Setup Ngrok
     

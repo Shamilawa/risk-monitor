@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Instance } from '../types';
+import NewsPanel from './NewsPanel';
 
 const fetchInstances = async (): Promise<Instance[]> => {
   const res = await fetch('/api/instances');
@@ -139,6 +140,7 @@ const Copier = () => {
         profit_limit: updatedInst.profit_limit !== undefined ? updatedInst.profit_limit : (original.profit_limit || 0),
         alert_drawdown_limit: updatedInst.alert_drawdown_limit !== undefined ? updatedInst.alert_drawdown_limit : (original.alert_drawdown_limit || 2.0),
         alert_daily_profit_target: updatedInst.alert_daily_profit_target !== undefined ? updatedInst.alert_daily_profit_target : (original.alert_daily_profit_target || 0),
+        account_type: updatedInst.account_type !== undefined ? updatedInst.account_type : (original.account_type || 'PERSONAL'),
         group_name: original.group_name || 'Ungrouped',
       };
 
@@ -220,6 +222,7 @@ const Copier = () => {
       symbol_mapping: '{}',
       alert_drawdown_limit: 2.0,
       alert_daily_profit_target: 0,
+      account_type: 'PERSONAL',
     });
   };
 
@@ -247,6 +250,7 @@ const Copier = () => {
           symbol_mapping: editingInstance.symbol_mapping || '{}',
           alert_drawdown_limit: editingInstance.alert_drawdown_limit || 2.0,
           alert_daily_profit_target: editingInstance.alert_daily_profit_target || 0,
+          account_type: editingInstance.account_type || 'PERSONAL',
         },
         {
           onSuccess: () => setEditingInstance(null),
@@ -265,6 +269,7 @@ const Copier = () => {
           auto_trade: editingInstance.auto_trade,
           alert_drawdown_limit: editingInstance.alert_drawdown_limit,
           alert_daily_profit_target: editingInstance.alert_daily_profit_target,
+          account_type: editingInstance.account_type,
         },
         {
           onSuccess: () => setEditingInstance(null),
@@ -329,7 +334,9 @@ const Copier = () => {
 
   return (
     <div className="workspace" style={{ padding: '8px', overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: '8px', height: 'calc(100vh - 36px)' }}>
-      
+
+      <NewsPanel />
+
       {/* Grid Desk Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-toolbar)', border: '1px solid var(--border-color)', padding: '6px 12px', borderRadius: '2px', flexShrink: 0 }}>
         <div>
@@ -661,6 +668,21 @@ const Copier = () => {
                     <option value="60">1 hour</option>
                     <option value="240">4 hours</option>
                     <option value="D">Daily</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Account Classification */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                  <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Account Type</label>
+                  <select
+                    value={editingInstance.account_type || 'PERSONAL'}
+                    onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, account_type: e.target.value } : null)}
+                    style={{ background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', outline: 'none' }}
+                  >
+                    <option value="PERSONAL">Personal</option>
+                    <option value="PROPFIRM">Prop Firm</option>
                   </select>
                 </div>
               </div>
