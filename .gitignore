@@ -1,0 +1,17 @@
+# Live trading data — never overwrite the VPS's copy via git
+mt5_bridge/trades.db
+
+# Copier runtime state (per-instance, regenerated automatically)
+mt5_bridge/ticket_map_*.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Frontend build/deps (built via mt5_bridge/deploy/build_release.ps1)
+mt5_bridge/frontend/node_modules/
+mt5_bridge/frontend/dist/
+
+# Deploy artifacts
+mt5_bridge/deploy/_stage/
+mt5_bridge/deploy/*.zip

@@ -1,0 +1,6 @@
+flask
+flask-socketio
+MetaTrader5
+requests
+python-dotenv
+pyzmq
