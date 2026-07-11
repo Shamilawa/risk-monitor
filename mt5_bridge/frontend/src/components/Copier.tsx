@@ -140,6 +140,7 @@ const Copier = () => {
         profit_limit: updatedInst.profit_limit !== undefined ? updatedInst.profit_limit : (original.profit_limit || 0),
         alert_drawdown_limit: updatedInst.alert_drawdown_limit !== undefined ? updatedInst.alert_drawdown_limit : (original.alert_drawdown_limit || 2.0),
         alert_daily_profit_target: updatedInst.alert_daily_profit_target !== undefined ? updatedInst.alert_daily_profit_target : (original.alert_daily_profit_target || 0),
+        alert_profit_lock_pct: updatedInst.alert_profit_lock_pct !== undefined ? updatedInst.alert_profit_lock_pct : (original.alert_profit_lock_pct || 0),
         account_type: updatedInst.account_type !== undefined ? updatedInst.account_type : (original.account_type || 'PERSONAL'),
         group_name: original.group_name || 'Ungrouped',
       };
@@ -222,6 +223,7 @@ const Copier = () => {
       symbol_mapping: '{}',
       alert_drawdown_limit: 2.0,
       alert_daily_profit_target: 0,
+      alert_profit_lock_pct: 0,
       account_type: 'PERSONAL',
     });
   };
@@ -250,6 +252,7 @@ const Copier = () => {
           symbol_mapping: editingInstance.symbol_mapping || '{}',
           alert_drawdown_limit: editingInstance.alert_drawdown_limit || 2.0,
           alert_daily_profit_target: editingInstance.alert_daily_profit_target || 0,
+          alert_profit_lock_pct: editingInstance.alert_profit_lock_pct || 0,
           account_type: editingInstance.account_type || 'PERSONAL',
         },
         {
@@ -269,6 +272,7 @@ const Copier = () => {
           auto_trade: editingInstance.auto_trade,
           alert_drawdown_limit: editingInstance.alert_drawdown_limit,
           alert_daily_profit_target: editingInstance.alert_daily_profit_target,
+          alert_profit_lock_pct: editingInstance.alert_profit_lock_pct,
           account_type: editingInstance.account_type,
         },
         {
@@ -701,12 +705,13 @@ const Copier = () => {
                   />
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Telegram: Daily Profit Target ($)</label>
+                  <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Telegram: Profit Lock Target (%)</label>
                   <input
                     type="number"
-                    value={editingInstance.alert_daily_profit_target ?? 0}
-                    onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, alert_daily_profit_target: parseFloat(e.target.value) } : null)}
+                    value={editingInstance.alert_profit_lock_pct ?? 0}
+                    onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, alert_profit_lock_pct: parseFloat(e.target.value) } : null)}
                     placeholder="0 = Disabled"
+                    step="0.1"
                     style={{ background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', fontFamily: 'monospace', outline: 'none' }}
                   />
                 </div>

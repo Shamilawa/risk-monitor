@@ -12,6 +12,7 @@ import requests
 from dotenv import load_dotenv
 import sqlite3
 import random
+import secrets
 import time
 import webbrowser
 import concurrent.futures
@@ -25,7 +26,6 @@ clients = []
 global_mt5_status = '{"online": false, "text": "Checking..."}'
 
 recent_logs = []
-global_was_time_disabled = False
 mt5_history_cache = {}
 
 MAX_RECENT_LOGS = 100
@@ -117,6 +117,88 @@ def send_telegram_message(message):
         logging.error(f"Exception while sending Telegram message: {e}")
         return False
 
+def send_telegram_message_with_buttons(message, buttons):
+    """buttons: list of (label, callback_data) tuples, rendered as a single row of inline buttons.
+    Returns the sent message's message_id (needed later to edit it), or None."""
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+
+    if not bot_token or not chat_id or chat_id == "YOUR_CHAT_ID_HERE":
+        logging.warning("Telegram credentials not fully set. Skipping Telegram notification.")
+        return None
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "reply_markup": {
+            "inline_keyboard": [[{"text": label, "callback_data": data} for label, data in buttons]]
+        }
+    }
+
+    try:
+        response = requests.post(url, json=payload, timeout=5)
+        if response.status_code == 200:
+            return response.json().get("result", {}).get("message_id")
+        else:
+            logging.error(f"Failed to send Telegram message with buttons: {response.text}")
+            return None
+    except Exception as e:
+        logging.error(f"Exception while sending Telegram message with buttons: {e}")
+        return None
+
+def telegram_edit_message(message_id, new_text):
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not bot_token or not chat_id or not message_id:
+        return False
+    url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
+    payload = {"chat_id": chat_id, "message_id": message_id, "text": new_text}
+    try:
+        response = requests.post(url, json=payload, timeout=5)
+        return response.status_code == 200
+    except Exception as e:
+        logging.error(f"Exception while editing Telegram message: {e}")
+        return False
+
+def telegram_answer_callback(callback_query_id, text=""):
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not bot_token:
+        return
+    url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
+    try:
+        requests.post(url, json={"callback_query_id": callback_query_id, "text": text}, timeout=5)
+    except Exception as e:
+        logging.error(f"Exception while answering Telegram callback: {e}")
+
+def telegram_delete_webhook():
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not bot_token:
+        return
+    try:
+        requests.post(f"https://api.telegram.org/bot{bot_token}/deleteWebhook", timeout=5)
+    except Exception as e:
+        logging.error(f"Exception while deleting Telegram webhook: {e}")
+
+def telegram_get_updates(offset, timeout=30):
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not bot_token:
+        return []
+    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    try:
+        response = requests.get(
+            url,
+            params={"offset": offset, "timeout": timeout, "allowed_updates": json.dumps(["callback_query"])},
+            timeout=timeout + 10
+        )
+        if response.status_code == 200:
+            return response.json().get("result", [])
+        else:
+            logging.error(f"Failed to poll Telegram getUpdates: {response.text}")
+    except Exception as e:
+        logging.error(f"Exception while polling Telegram getUpdates: {e}")
+    return []
+
 def init_db():
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
@@ -191,6 +273,9 @@ def init_db():
     try:
         c.execute("ALTER TABLE instances ADD COLUMN account_type TEXT DEFAULT 'PERSONAL'")
     except sqlite3.OperationalError: pass
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN alert_profit_lock_pct REAL DEFAULT 0")
+    except sqlite3.OperationalError: pass
 
     c.execute('''
         CREATE TABLE IF NOT EXISTS trading_log (
@@ -238,6 +323,33 @@ def init_db():
         )
     ''')
     c.execute("INSERT OR IGNORE INTO global_settings (id, trade_disable, disable_time_start, disable_time_end) VALUES (1, 0, '', '')")
+
+    try:
+        c.execute("ALTER TABLE global_settings ADD COLUMN telegram_last_update_id INTEGER DEFAULT 0")
+    except sqlite3.OperationalError: pass
+    try:
+        c.execute("ALTER TABLE global_settings ADD COLUMN auto_close_enabled INTEGER DEFAULT 1")
+    except sqlite3.OperationalError: pass
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS daily_equity_baseline (
+            instance_id INTEGER,
+            date TEXT,
+            start_equity REAL,
+            PRIMARY KEY (instance_id, date)
+        )
+    ''')
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS risk_snapshots (
+            instance_id INTEGER,
+            date TEXT,
+            peak_drawdown_pct REAL DEFAULT 0,
+            max_risk_usd REAL DEFAULT 0,
+            no_sl_count INTEGER DEFAULT 0,
+            PRIMARY KEY (instance_id, date)
+        )
+    ''')
 
     c.execute('''
         CREATE TABLE IF NOT EXISTS blocked_copier_actions (
@@ -413,6 +525,7 @@ def fetch_instance_data(inst):
     alert_drawdown_limit = inst[10] if len(inst) > 10 else 2.0
     alert_daily_profit_target = inst[11] if len(inst) > 11 else 0.0
     account_type = inst[12] if len(inst) > 12 else 'PERSONAL'
+    alert_profit_lock_pct = inst[13] if len(inst) > 13 else 0.0
 
     try:
         with mt5_lock:
@@ -439,6 +552,7 @@ def fetch_instance_data(inst):
                 "alert_drawdown_limit": alert_drawdown_limit,
                 "alert_daily_profit_target": alert_daily_profit_target,
                 "account_type": account_type,
+                "alert_profit_lock_pct": alert_profit_lock_pct,
                 "positions": [],
                 "historical_equity": {"labels": [], "data": []}
             }
@@ -533,12 +647,88 @@ def fetch_instance_data(inst):
 
 active_positions_cache = {}
 drawdown_alert_state = {}
-daily_profit_alert_state = {}
 connection_fail_count = {}
 last_summary_date = ""
 
+# Profit-lock state machine: inst_id -> {"status": IDLE|APPROACHING|ARMED|MISSED,
+# "token": str|None, "date": "YYYY-MM-DD", "message_id": int|None}
+# In-memory only (not persisted) so an app restart always reverts to IDLE and
+# re-evaluates fresh, rather than risking a stale ARM firing an unattended close.
+profit_lock_state = {}
+profit_lock_lock = threading.Lock()
+
+
+def _query_risk_range(c, inst_id, date_from, date_to):
+    c.execute(
+        "SELECT MAX(peak_drawdown_pct), MAX(max_risk_usd), SUM(no_sl_count) FROM risk_snapshots WHERE instance_id = ? AND date BETWEEN ? AND ?",
+        (inst_id, date_from, date_to)
+    )
+    row = c.fetchone()
+    return {
+        "peak_drawdown_pct": (row[0] or 0.0) if row else 0.0,
+        "max_risk_usd": (row[1] or 0.0) if row else 0.0,
+        "no_sl_count": (row[2] or 0) if row else 0,
+    }
+
+
+def _query_trade_stats(c, inst_id, ts_from, ts_to):
+    c.execute(
+        "SELECT profit FROM trading_log WHERE instance_id = ? AND COALESCE(local_time, time) >= ? AND COALESCE(local_time, time) < ? ORDER BY COALESCE(local_time, time) ASC",
+        (inst_id, ts_from, ts_to)
+    )
+    profits = [row[0] for row in c.fetchall() if row[0] is not None]
+    total = len(profits)
+    wins = sum(1 for p in profits if p > 0)
+    win_rate = (wins / total * 100.0) if total else None
+    largest_loss = min(profits) if profits else 0.0
+    total_realized = sum(profits)
+
+    max_streak = 0
+    cur_streak = 0
+    for p in profits:
+        if p < 0:
+            cur_streak += 1
+            max_streak = max(max_streak, cur_streak)
+        else:
+            cur_streak = 0
+
+    return {
+        "total_trades": total, "win_rate": win_rate, "largest_loss": largest_loss,
+        "max_loss_streak": max_streak, "total_realized": total_realized,
+    }
+
+
+def build_risk_report(period, risk_payload, c, date_from, date_to, ts_from=None, ts_to=None, title_suffix=""):
+    title = {"daily": "Daily Risk Report", "weekly": "Weekly Risk Report", "monthly": "Monthly Risk Report"}[period]
+    lines = [f"🛡️ **{title}**{title_suffix}"]
+
+    for r in risk_payload:
+        inst_id = r["id"]
+        inst_name = r["name"]
+        dd_limit = r.get("alert_drawdown_limit", 2.0)
+
+        risk = _query_risk_range(c, inst_id, date_from, date_to)
+        breach_flag = " ⚠️ breached limit" if dd_limit > 0 and risk["peak_drawdown_pct"] >= dd_limit else ""
+
+        lines.append(f"\n{inst_name}")
+        lines.append(f"  Peak drawdown: {risk['peak_drawdown_pct']:.2f}% (limit {dd_limit:.1f}%){breach_flag}")
+        lines.append(f"  Max risk exposed: ${risk['max_risk_usd']:.2f}")
+        lines.append(f"  Trades without SL: {risk['no_sl_count']}")
+
+        if period in ("weekly", "monthly") and ts_from is not None:
+            stats = _query_trade_stats(c, inst_id, ts_from, ts_to)
+            if stats["total_trades"] > 0:
+                wr = f"{stats['win_rate']:.0f}%" if stats["win_rate"] is not None else "n/a"
+                lines.append(f"  Win rate: {wr} ({stats['total_trades']} trades)")
+                lines.append(f"  Largest single loss: ${stats['largest_loss']:.2f}")
+                lines.append(f"  Max consecutive losses: {stats['max_loss_streak']}")
+                lines.append(f"  Realized (context only): ${stats['total_realized']:.2f}")
+
+    return "\n".join(lines)
+
+
 def poller_thread():
-    global global_mt5_status, global_was_time_disabled
+    global global_mt5_status
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
     
     while True:
@@ -546,14 +736,15 @@ def poller_thread():
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
             try:
-                c.execute("SELECT id, name, path, symbol_suffix, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target, account_type FROM instances")
+                c.execute("SELECT id, name, path, symbol_suffix, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct FROM instances")
             except sqlite3.OperationalError:
                 try:
                     c.execute("SELECT id, name, path, symbol_suffix, group_name FROM instances")
                 except sqlite3.OperationalError:
                     c.execute("SELECT id, name, path, symbol_suffix, 'Ungrouped' as group_name FROM instances")
             instances = c.fetchall()
-            
+            inst_path_by_id = {inst[0]: inst[2] for inst in instances}
+
             risk_payload = []
             
             if not instances:
@@ -586,7 +777,11 @@ def poller_thread():
                 global last_summary_date
                 current_date_str = datetime.utcnow().strftime("%Y-%m-%d")
                 online_ids = set()
-                
+
+                c.execute("SELECT auto_close_enabled FROM global_settings WHERE id = 1")
+                auto_close_row = c.fetchone()
+                auto_close_enabled = bool(auto_close_row[0]) if auto_close_row and auto_close_row[0] is not None else True
+
                 for r in risk_payload:
                     inst_id = r["id"]
                     inst_name = r["name"]
@@ -594,14 +789,21 @@ def poller_thread():
                     
                     drawdown_pct = r.get("drawdown_pct", 0.0)
                     alert_dd_limit = r.get("alert_drawdown_limit", 2.0)
-                    alert_profit_target = r.get("alert_daily_profit_target", 0.0)
-                    
+
                     current_tickets = set(p["ticket"] for p in r.get("positions", []))
+                    previous_tickets = active_positions_cache.get(inst_id, set())
                     if inst_id in active_positions_cache:
-                        closed_tickets = active_positions_cache[inst_id] - current_tickets
+                        closed_tickets = previous_tickets - current_tickets
                         for t in closed_tickets:
                             send_telegram_message(f"🔒 Trade {t} on {inst_name} Closed")
                     active_positions_cache[inst_id] = current_tickets
+
+                    newly_opened_tickets = current_tickets - previous_tickets
+                    no_sl_opened = 0
+                    if newly_opened_tickets:
+                        for p in r.get("positions", []):
+                            if p["ticket"] in newly_opened_tickets and not p.get("sl"):
+                                no_sl_opened += 1
                     
                     if alert_dd_limit > 0:
                         if drawdown_pct >= alert_dd_limit:
@@ -611,12 +813,105 @@ def poller_thread():
                         elif drawdown_pct < alert_dd_limit - 0.5:
                             drawdown_alert_state[inst_id] = False
                             
-                    unrealized_profit = r.get("equity", 0.0) - r.get("balance", 0.0)
-                    if alert_profit_target > 0 and unrealized_profit >= alert_profit_target:
-                        if daily_profit_alert_state.get(inst_id) != current_date_str:
-                            send_telegram_message(f"🎯 Daily Profit Target Reached! {inst_name} has unrealized profit of ${unrealized_profit:.2f}.")
-                            daily_profit_alert_state[inst_id] = current_date_str
-                            
+                    # --- Daily risk snapshot (peak drawdown / max risk exposure / no-SL opens) ---
+                    total_risk_usd = r.get("total_risk_usd", 0.0)
+                    c.execute("SELECT peak_drawdown_pct, max_risk_usd, no_sl_count FROM risk_snapshots WHERE instance_id = ? AND date = ?", (inst_id, current_date_str))
+                    snap_row = c.fetchone()
+                    if snap_row is None:
+                        c.execute(
+                            "INSERT INTO risk_snapshots (instance_id, date, peak_drawdown_pct, max_risk_usd, no_sl_count) VALUES (?, ?, ?, ?, ?)",
+                            (inst_id, current_date_str, drawdown_pct, total_risk_usd, no_sl_opened)
+                        )
+                    else:
+                        new_peak_dd = max(snap_row[0] or 0.0, drawdown_pct)
+                        new_max_risk = max(snap_row[1] or 0.0, total_risk_usd)
+                        new_no_sl_count = (snap_row[2] or 0) + no_sl_opened
+                        c.execute(
+                            "UPDATE risk_snapshots SET peak_drawdown_pct = ?, max_risk_usd = ?, no_sl_count = ? WHERE instance_id = ? AND date = ?",
+                            (new_peak_dd, new_max_risk, new_no_sl_count, inst_id, current_date_str)
+                        )
+
+                    # --- Profit-lock state machine (arm-then-auto-close on unrealized % target) ---
+                    lock_target = r.get("alert_profit_lock_pct", 0.0)
+                    if lock_target > 0:
+                        equity = r.get("equity", 0.0)
+                        balance = r.get("balance", 0.0)
+
+                        c.execute("SELECT start_equity FROM daily_equity_baseline WHERE instance_id = ? AND date = ?", (inst_id, current_date_str))
+                        baseline_row = c.fetchone()
+                        if baseline_row is None:
+                            c.execute("INSERT OR IGNORE INTO daily_equity_baseline (instance_id, date, start_equity) VALUES (?, ?, ?)", (inst_id, current_date_str, equity))
+                            start_equity = equity
+                        else:
+                            start_equity = baseline_row[0] or equity
+
+                        unrealized_pct = ((equity - balance) / start_equity * 100) if start_equity > 0 else 0.0
+                        pre_alert_level = lock_target * 0.75
+                        disarm_level = lock_target * 0.5
+
+                        with profit_lock_lock:
+                            state = profit_lock_state.get(inst_id)
+                            if state is None or state.get("date") != current_date_str:
+                                state = {"status": "IDLE", "token": None, "date": current_date_str, "message_id": None}
+                                profit_lock_state[inst_id] = state
+
+                            if not current_tickets and state["status"] in ("APPROACHING", "ARMED"):
+                                state["status"] = "IDLE"
+                                state["token"] = None
+
+                            status = state["status"]
+
+                            if status == "IDLE":
+                                if unrealized_pct >= lock_target:
+                                    send_telegram_message(
+                                        f"ℹ️ {inst_name} hit +{unrealized_pct:.2f}% unrealized. I sent an alert earlier "
+                                        f"that wasn't armed — this is just a confirmation, closing is on you from here."
+                                    )
+                                    state["status"] = "MISSED"
+                                elif unrealized_pct >= pre_alert_level:
+                                    token = secrets.token_hex(4)
+                                    state["token"] = token
+                                    state["status"] = "APPROACHING"
+                                    msg_id = send_telegram_message_with_buttons(
+                                        f"🔔 {inst_name} approaching +{lock_target:.2f}% (now +{unrealized_pct:.2f}%). "
+                                        f"Tap ARM to auto-close the moment it hits +{lock_target:.2f}%.",
+                                        [("ARM", f"arm:{inst_id}:{token}")]
+                                    )
+                                    state["message_id"] = msg_id
+                            elif status == "APPROACHING":
+                                if unrealized_pct >= lock_target:
+                                    send_telegram_message(
+                                        f"ℹ️ {inst_name} hit +{unrealized_pct:.2f}% unrealized. I sent an alert earlier "
+                                        f"that wasn't armed — this is just a confirmation, closing is on you from here."
+                                    )
+                                    state["status"] = "MISSED"
+                                    state["token"] = None
+                                elif unrealized_pct <= disarm_level:
+                                    state["status"] = "IDLE"
+                                    state["token"] = None
+                            elif status == "ARMED":
+                                if unrealized_pct >= lock_target:
+                                    if auto_close_enabled:
+                                        close_res = close_instance_positions((inst_id, inst_name, inst_path_by_id.get(inst_id)))
+                                        send_telegram_message(
+                                            f"✅ Closed {inst_name} — unrealized hit +{unrealized_pct:.2f}% as you confirmed. "
+                                            f"Closed {close_res.get('closed', 0)} position(s)."
+                                        )
+                                    else:
+                                        send_telegram_message(
+                                            f"⚠️ {inst_name} hit +{unrealized_pct:.2f}% and was armed, but auto-close is "
+                                            f"currently disabled. Please close manually."
+                                        )
+                                    state["status"] = "IDLE"
+                                    state["token"] = None
+                                elif unrealized_pct <= disarm_level:
+                                    state["status"] = "IDLE"
+                                    state["token"] = None
+                            elif status == "MISSED":
+                                if unrealized_pct < pre_alert_level:
+                                    state["status"] = "IDLE"
+
+
                 for inst in instances:
                     inst_id = inst[0]
                     inst_name = inst[1]
@@ -630,56 +925,35 @@ def poller_thread():
                         connection_fail_count[inst_id] = 0
                         
                 if last_summary_date and last_summary_date != current_date_str:
-                    summary_msg = "📊 **Daily Summary**\n"
-                    total_profit = 0
-                    for r in risk_payload:
-                        profit = r.get("realized_gains", {}).get("yesterday", 0.0)
-                        summary_msg += f"- {r['name']}: ${profit:.2f}\n"
-                        total_profit += profit
-                    summary_msg += f"\nTotal: ${total_profit:.2f}"
-                    send_telegram_message(summary_msg)
-                    
+                    yesterday_date_str = last_summary_date
+                    daily_report = build_risk_report("daily", risk_payload, c, yesterday_date_str, yesterday_date_str)
+                    send_telegram_message(daily_report)
+
                     if datetime.utcnow().weekday() == 5:
-                        summary_msg = "📊 **Weekly Summary**\n"
-                        total_profit = 0
-                        for r in risk_payload:
-                            profit = r.get("realized_gains", {}).get("week", 0.0)
-                            summary_msg += f"- {r['name']}: ${profit:.2f}\n"
-                            total_profit += profit
-                        summary_msg += f"\nTotal: ${total_profit:.2f}"
-                        send_telegram_message(summary_msg)
-                        
+                        # Saturday: report the trading week just finished (Monday -> yesterday/Friday)
+                        today_dt = datetime.utcnow()
+                        week_start_dt = today_dt - timedelta(days=5)
+                        week_start_str = week_start_dt.strftime("%Y-%m-%d")
+                        ts_from = int(datetime(week_start_dt.year, week_start_dt.month, week_start_dt.day, tzinfo=timezone.utc).timestamp())
+                        ts_to = int(datetime(today_dt.year, today_dt.month, today_dt.day, tzinfo=timezone.utc).timestamp())
+                        weekly_report = build_risk_report("weekly", risk_payload, c, week_start_str, yesterday_date_str, ts_from, ts_to)
+                        send_telegram_message(weekly_report)
+
                     if datetime.utcnow().day == 1:
-                        summary_msg = "📊 **Monthly Summary**\n"
-                        total_profit = 0
-                        for r in risk_payload:
-                            profit = r.get("realized_gains", {}).get("last_month", 0.0)
-                            summary_msg += f"- {r['name']}: ${profit:.2f}\n"
-                            total_profit += profit
-                        summary_msg += f"\nTotal: ${total_profit:.2f}"
-                        send_telegram_message(summary_msg)
-                
+                        today_dt = datetime.utcnow()
+                        this_month_start_dt = datetime(today_dt.year, today_dt.month, 1)
+                        last_month_end_dt = this_month_start_dt - timedelta(days=1)
+                        last_month_start_dt = last_month_end_dt.replace(day=1)
+                        date_from = last_month_start_dt.strftime("%Y-%m-%d")
+                        date_to = last_month_end_dt.strftime("%Y-%m-%d")
+                        ts_from = int(last_month_start_dt.replace(tzinfo=timezone.utc).timestamp())
+                        ts_to = int(this_month_start_dt.replace(tzinfo=timezone.utc).timestamp())
+                        monthly_report = build_risk_report("monthly", risk_payload, c, date_from, date_to, ts_from, ts_to)
+                        send_telegram_message(monthly_report)
+
                 if last_summary_date != current_date_str:
                     last_summary_date = current_date_str
-            
-            c.execute("SELECT disable_time_start, disable_time_end FROM global_settings WHERE id = 1")
-            global_row = c.fetchone()
-            if global_row:
-                disable_time_start = global_row[0]
-                disable_time_end = global_row[1]
-                if disable_time_start and disable_time_end:
-                    is_time_disabled = is_time_in_range(disable_time_start, disable_time_end)
-                    if is_time_disabled and not global_was_time_disabled:
-                        global_was_time_disabled = True
-                        send_telegram_message(f"🛑 Stop trading for the day. Trade Disable Time Period ({disable_time_start} - {disable_time_end}) has started.")
-                        logging.info("Entered Trade Disable Time Period.")
-                    elif not is_time_disabled and global_was_time_disabled:
-                        global_was_time_disabled = False
-                        send_telegram_message("▶️ Starting again. Trade Disable Time Period has ended.")
-                        logging.info("Exited Trade Disable Time Period.")
-                else:
-                    global_was_time_disabled = False
-                    
+
             conn.close()
         except Exception as e:
             logging.error(f"Poller thread error: {e}")
@@ -739,24 +1013,34 @@ def api_global_settings():
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
     if request.method == 'GET':
-        c.execute("SELECT trade_disable, disable_time_start, disable_time_end FROM global_settings WHERE id = 1")
-        row = c.fetchone()
-        conn.close()
-        if row:
-            return jsonify({"trade_disable": bool(row[0]), "disable_time_start": row[1], "disable_time_end": row[2]})
-        return jsonify({"trade_disable": False, "disable_time_start": "", "disable_time_end": ""})
+        try:
+            c.execute("SELECT trade_disable, disable_time_start, disable_time_end, auto_close_enabled FROM global_settings WHERE id = 1")
+            row = c.fetchone()
+            conn.close()
+            if row:
+                return jsonify({"trade_disable": bool(row[0]), "disable_time_start": row[1], "disable_time_end": row[2], "auto_close_enabled": bool(row[3]) if row[3] is not None else True})
+            return jsonify({"trade_disable": False, "disable_time_start": "", "disable_time_end": "", "auto_close_enabled": True})
+        except sqlite3.OperationalError:
+            c.execute("SELECT trade_disable, disable_time_start, disable_time_end FROM global_settings WHERE id = 1")
+            row = c.fetchone()
+            conn.close()
+            if row:
+                return jsonify({"trade_disable": bool(row[0]), "disable_time_start": row[1], "disable_time_end": row[2], "auto_close_enabled": True})
+            return jsonify({"trade_disable": False, "disable_time_start": "", "disable_time_end": "", "auto_close_enabled": True})
     else:
         data = request.json
         trade_disable = int(data.get('trade_disable', 0))
         disable_time_start = data.get('disable_time_start', '')
         disable_time_end = data.get('disable_time_end', '')
-        c.execute("SELECT id FROM global_settings WHERE id = 1")
-        if c.fetchone():
-            c.execute("UPDATE global_settings SET trade_disable=?, disable_time_start=?, disable_time_end=? WHERE id=1", 
-                      (trade_disable, disable_time_start, disable_time_end))
+        c.execute("SELECT id, auto_close_enabled FROM global_settings WHERE id = 1")
+        existing = c.fetchone()
+        auto_close_enabled = int(data.get('auto_close_enabled', existing[1] if existing and existing[1] is not None else 1))
+        if existing:
+            c.execute("UPDATE global_settings SET trade_disable=?, disable_time_start=?, disable_time_end=?, auto_close_enabled=? WHERE id=1",
+                      (trade_disable, disable_time_start, disable_time_end, auto_close_enabled))
         else:
-            c.execute("INSERT INTO global_settings (id, trade_disable, disable_time_start, disable_time_end) VALUES (1, ?, ?, ?)", 
-                      (trade_disable, disable_time_start, disable_time_end))
+            c.execute("INSERT INTO global_settings (id, trade_disable, disable_time_start, disable_time_end, auto_close_enabled) VALUES (1, ?, ?, ?, ?)",
+                      (trade_disable, disable_time_start, disable_time_end, auto_close_enabled))
         conn.commit()
         conn.close()
         return jsonify({"status": "success"})
@@ -768,7 +1052,7 @@ def api_instances():
     
     if request.method == 'GET':
         try:
-            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target, account_type FROM instances ORDER BY id ASC")
+            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct FROM instances ORDER BY id ASC")
         except sqlite3.OperationalError:
             try:
                 c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name FROM instances ORDER BY id ASC")
@@ -813,7 +1097,8 @@ def api_instances():
                 "copier_risk_multiplier": copier_risk_multiplier,
                 "alert_drawdown_limit": r[15] if len(r) > 15 else 2.0,
                 "alert_daily_profit_target": r[16] if len(r) > 16 else 0.0,
-                "account_type": r[17] if len(r) > 17 else 'PERSONAL'
+                "account_type": r[17] if len(r) > 17 else 'PERSONAL',
+                "alert_profit_lock_pct": r[18] if len(r) > 18 else 0.0
             })
         conn.close()
         return jsonify(instances)
@@ -831,6 +1116,7 @@ def api_instances():
         alert_drawdown_limit = float(data.get('alert_drawdown_limit', 2.0))
         alert_daily_profit_target = float(data.get('alert_daily_profit_target', 0.0))
         account_type = data.get('account_type', 'PERSONAL')
+        alert_profit_lock_pct = float(data.get('alert_profit_lock_pct', 0.0))
         import time
         profit_limit_start_time = int(time.time())
 
@@ -839,7 +1125,7 @@ def api_instances():
             return jsonify({"error": "Name and path required"}), 400
 
         try:
-            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type))
+            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct))
         except sqlite3.OperationalError:
             try:
                 c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time))
@@ -865,13 +1151,14 @@ def api_instances():
         alert_drawdown_limit = float(data.get('alert_drawdown_limit', 2.0))
         alert_daily_profit_target = float(data.get('alert_daily_profit_target', 0.0))
         account_type = data.get('account_type', 'PERSONAL')
+        alert_profit_lock_pct = float(data.get('alert_profit_lock_pct', 0.0))
 
         if not instance_id or not name or not path:
             conn.close()
             return jsonify({"error": "ID, name and path required"}), 400
 
         try:
-            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=?, group_name=?, alert_drawdown_limit=?, alert_daily_profit_target=?, account_type=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, instance_id))
+            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=?, group_name=?, alert_drawdown_limit=?, alert_daily_profit_target=?, account_type=?, alert_profit_lock_pct=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, instance_id))
         except sqlite3.OperationalError:
             try:
                 c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, instance_id))
@@ -1015,45 +1302,6 @@ def api_tracker():
         return jsonify(data)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-def is_time_in_range(start_str, end_str):
-    if not start_str or not end_str:
-        return False
-    try:
-        now = datetime.now().time()
-        start = datetime.strptime(start_str, '%H:%M').time()
-        end = datetime.strptime(end_str, '%H:%M').time()
-        if start <= end:
-            return start <= now <= end
-        else:
-            return start <= now or now <= end
-    except Exception as e:
-        return False
-
-def check_global_disabled():
-    try:
-        conn = sqlite3.connect('trades.db')
-        c = conn.cursor()
-        c.execute("SELECT trade_disable, disable_time_start, disable_time_end FROM global_settings WHERE id = 1")
-        row = c.fetchone()
-        conn.close()
-        if not row:
-            return False, ""
-        
-        trade_disable = bool(row[0])
-        disable_time_start = row[1]
-        disable_time_end = row[2]
-        
-        if trade_disable:
-            return True, "Global trade is disabled manually."
-            
-        if disable_time_start and disable_time_end:
-            if is_time_in_range(disable_time_start, disable_time_end):
-                return True, f"Current time is within Trade Disable Time Period ({disable_time_start} - {disable_time_end})."
-                
-        return False, ""
-    except Exception as e:
-        return False, ""
 
 def api_execute_trade():
     data = request.json
@@ -1776,6 +2024,80 @@ def zmq_router_thread():
         except Exception as e:
             logging.error(f"ZMQ Router error: {e}")
 
+def telegram_listener_thread():
+    """Long-polls Telegram getUpdates for inline-keyboard button taps (the ARM
+    button on profit-lock alerts). Long-polling (not a webhook) so this works
+    behind the VPS's NAT with no public URL/HTTPS setup required."""
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not bot_token or not chat_id or chat_id == "YOUR_CHAT_ID_HERE":
+        logging.warning("[TELEGRAM LISTENER] Telegram credentials not set, inbound listener not started.")
+        return
+
+    # A webhook (even one set accidentally by some other tool/run) silently
+    # blocks getUpdates from ever receiving anything, so clear it on startup.
+    telegram_delete_webhook()
+
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    c.execute("SELECT telegram_last_update_id FROM global_settings WHERE id = 1")
+    row = c.fetchone()
+    last_update_id = row[0] if row and row[0] else 0
+    conn.close()
+
+    logging.info("[TELEGRAM LISTENER] Polling for inline button taps...")
+    while True:
+        try:
+            updates = telegram_get_updates(offset=last_update_id + 1, timeout=30)
+            for update in updates:
+                last_update_id = update["update_id"]
+
+                cq = update.get("callback_query")
+                if not cq:
+                    continue
+
+                callback_id = cq.get("id")
+                sender_chat_id = str(cq.get("message", {}).get("chat", {}).get("id", ""))
+                if sender_chat_id != str(chat_id):
+                    logging.warning(f"[TELEGRAM LISTENER] Ignoring callback from unauthorized chat {sender_chat_id}")
+                    continue
+
+                message_id = cq.get("message", {}).get("message_id")
+                parts = (cq.get("data") or "").split(":")
+
+                if len(parts) == 3 and parts[0] == "arm":
+                    try:
+                        inst_id = int(parts[1])
+                    except ValueError:
+                        telegram_answer_callback(callback_id, "Invalid request")
+                        continue
+                    token = parts[2]
+
+                    with profit_lock_lock:
+                        state = profit_lock_state.get(inst_id)
+                        armed_ok = bool(state and state.get("status") == "APPROACHING" and state.get("token") == token)
+                        if armed_ok:
+                            state["status"] = "ARMED"
+                            state["token"] = None
+
+                    if armed_ok:
+                        telegram_answer_callback(callback_id, "Armed")
+                        telegram_edit_message(message_id, "🔒 Armed — will auto-close the moment the target is hit.")
+                    else:
+                        telegram_answer_callback(callback_id, "This alert has expired or was already handled.")
+                else:
+                    telegram_answer_callback(callback_id, "Unknown action")
+
+            if updates:
+                conn = sqlite3.connect('trades.db')
+                c = conn.cursor()
+                c.execute("UPDATE global_settings SET telegram_last_update_id = ? WHERE id = 1", (last_update_id,))
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            logging.error(f"Telegram listener error: {e}")
+            time.sleep(2)
+
 copier_workers = {}
 
 def copier_manager_thread():
@@ -2059,6 +2381,7 @@ def main():
     threading.Thread(target=zmq_router_thread, daemon=True).start()
     threading.Thread(target=copier_manager_thread, daemon=True).start()
     threading.Thread(target=news_calendar_thread, daemon=True).start()
+    threading.Thread(target=telegram_listener_thread, daemon=True).start()
     
     # Setup Ngrok
     
