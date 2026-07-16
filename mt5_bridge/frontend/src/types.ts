@@ -29,10 +29,6 @@ export interface Instance {
   positions?: Position[];
   realized_gains?: Record<string, number>;
   symbol_mapping?: string;
-  auto_trade?: number;
-  accepted_timeframe?: string;
-  profit_limit?: number;
-  risk_usd?: number;
   group_name?: string;
   alert_drawdown_limit?: number;
   alert_daily_profit_target?: number;

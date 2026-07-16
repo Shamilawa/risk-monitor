@@ -133,11 +133,7 @@ const Copier = () => {
         id: updatedInst.id,
         name: updatedInst.name !== undefined ? updatedInst.name : original.name,
         path: updatedInst.path !== undefined ? updatedInst.path : original.path,
-        risk_usd: updatedInst.risk_usd !== undefined ? updatedInst.risk_usd : (original.risk_usd || 100),
         symbol_mapping: updatedInst.symbol_mapping !== undefined ? updatedInst.symbol_mapping : (original.symbol_mapping || '{}'),
-        auto_trade: updatedInst.auto_trade !== undefined ? updatedInst.auto_trade : (original.auto_trade || 0),
-        accepted_timeframe: updatedInst.accepted_timeframe !== undefined ? updatedInst.accepted_timeframe : (original.accepted_timeframe || 'all'),
-        profit_limit: updatedInst.profit_limit !== undefined ? updatedInst.profit_limit : (original.profit_limit || 0),
         alert_drawdown_limit: updatedInst.alert_drawdown_limit !== undefined ? updatedInst.alert_drawdown_limit : (original.alert_drawdown_limit || 2.0),
         alert_daily_profit_target: updatedInst.alert_daily_profit_target !== undefined ? updatedInst.alert_daily_profit_target : (original.alert_daily_profit_target || 0),
         alert_profit_lock_pct: updatedInst.alert_profit_lock_pct !== undefined ? updatedInst.alert_profit_lock_pct : (original.alert_profit_lock_pct || 0),
@@ -216,10 +212,6 @@ const Copier = () => {
       name: '',
       path: '',
       copier_role: 'NONE',
-      risk_usd: 100,
-      profit_limit: 0,
-      accepted_timeframe: 'all',
-      auto_trade: 0,
       symbol_mapping: '{}',
       alert_drawdown_limit: 2.0,
       alert_daily_profit_target: 0,
@@ -245,10 +237,6 @@ const Copier = () => {
         {
           name: editingInstance.name,
           path: editingInstance.path,
-          risk_usd: editingInstance.risk_usd || 100,
-          profit_limit: editingInstance.profit_limit || 0,
-          accepted_timeframe: editingInstance.accepted_timeframe || 'all',
-          auto_trade: editingInstance.auto_trade || 0,
           symbol_mapping: editingInstance.symbol_mapping || '{}',
           alert_drawdown_limit: editingInstance.alert_drawdown_limit || 2.0,
           alert_daily_profit_target: editingInstance.alert_daily_profit_target || 0,
@@ -266,10 +254,6 @@ const Copier = () => {
           id: editingInstance.id,
           name: editingInstance.name,
           path: editingInstance.path,
-          risk_usd: editingInstance.risk_usd,
-          profit_limit: editingInstance.profit_limit,
-          accepted_timeframe: editingInstance.accepted_timeframe,
-          auto_trade: editingInstance.auto_trade,
           alert_drawdown_limit: editingInstance.alert_drawdown_limit,
           alert_daily_profit_target: editingInstance.alert_daily_profit_target,
           alert_profit_lock_pct: editingInstance.alert_profit_lock_pct,
@@ -366,9 +350,6 @@ const Copier = () => {
                 <th style={{ width: '140px' }}>Role</th>
                 <th style={{ width: '130px' }}>Risk Model</th>
                 <th style={{ width: '130px' }}>Lotsize / Risk</th>
-                <th style={{ width: '80px', textAlign: 'center' }}>Auto Trade</th>
-                <th style={{ width: '110px' }}>Timeframe</th>
-                <th style={{ width: '100px', textAlign: 'right' }}>Profit Limit</th>
                 <th style={{ width: '90px', textAlign: 'center' }}>Symbol Map</th>
                 <th>Path</th>
                 <th style={{ width: '100px', textAlign: 'center' }}>Actions</th>
@@ -478,58 +459,6 @@ const Copier = () => {
                         )}
                       </td>
 
-                      {/* Auto Trade (Switch) */}
-                      <td style={{ textAlign: 'center' }}>
-                        <input
-                          type="checkbox"
-                          checked={inst.auto_trade === 1}
-                          onChange={(e) => updateInstanceMutation.mutate({ id: inst.id, auto_trade: e.target.checked ? 1 : 0 })}
-                          style={{ cursor: 'pointer', accentColor: 'var(--color-active)' }}
-                        />
-                      </td>
-
-                      {/* Timeframe */}
-                      <td>
-                        <select
-                          value={inst.accepted_timeframe || 'all'}
-                          onChange={(e) => updateInstanceMutation.mutate({ id: inst.id, accepted_timeframe: e.target.value })}
-                          style={{
-                            width: '100%',
-                            fontSize: '10px',
-                            background: 'var(--bg-app)',
-                            color: 'var(--text-main)',
-                            border: '1px solid var(--border-color)',
-                            outline: 'none',
-                            padding: '1px 4px',
-                          }}
-                        >
-                          <option value="all">All Timeframes</option>
-                          <option value="1">1 min</option>
-                          <option value="3">3 mins</option>
-                          <option value="5">5 mins</option>
-                          <option value="15">15 mins</option>
-                          <option value="30">30 mins</option>
-                          <option value="60">1 hour</option>
-                          <option value="240">4 hours</option>
-                          <option value="D">Daily</option>
-                        </select>
-                      </td>
-
-                      {/* Profit Limit */}
-                      <td style={{ textAlign: 'right' }}>
-                        <ControlledNumericInput
-                          value={inst.profit_limit || 0}
-                          prefix="$"
-                          onChange={(val) => {
-                            updateInstanceMutation.mutate({ id: inst.id, profit_limit: val });
-                          }}
-                          style={{
-                            width: '80px',
-                            marginLeft: 'auto',
-                          }}
-                        />
-                      </td>
-
                       {/* Symbol Map config button */}
                       <td style={{ textAlign: 'center' }}>
                         {isMaster || isSub ? (
@@ -604,27 +533,16 @@ const Copier = () => {
             </div>
             <div className="modal-body" style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
               
-              {/* Form Grid */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Instance Name</label>
-                  <input
-                    type="text"
-                    value={editingInstance.name}
-                    onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, name: e.target.value } : null)}
-                    placeholder="e.g. IC Markets Live"
-                    style={{ background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', fontFamily: 'monospace', outline: 'none' }}
-                  />
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Default Risk ($)</label>
-                  <input
-                    type="number"
-                    value={editingInstance.risk_usd || 100}
-                    onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, risk_usd: parseFloat(e.target.value) } : null)}
-                    style={{ background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', fontFamily: 'monospace', outline: 'none' }}
-                  />
-                </div>
+              {/* Instance Name */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Instance Name</label>
+                <input
+                  type="text"
+                  value={editingInstance.name}
+                  onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, name: e.target.value } : null)}
+                  placeholder="e.g. IC Markets Live"
+                  style={{ background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', fontFamily: 'monospace', outline: 'none' }}
+                />
               </div>
 
               {/* Path Browser */}
@@ -641,38 +559,6 @@ const Copier = () => {
                   <button className="btn-toolbar" style={{ borderColor: 'var(--color-active)', color: 'var(--color-active)' }} onClick={handleBrowsePath}>
                     Browse...
                   </button>
-                </div>
-              </div>
-
-              {/* Secondary Details Grid */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Profit Limit ($)</label>
-                  <input
-                    type="number"
-                    value={editingInstance.profit_limit || 0}
-                    onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, profit_limit: parseFloat(e.target.value) } : null)}
-                    placeholder="0 = No Limit"
-                    style={{ background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', fontFamily: 'monospace', outline: 'none' }}
-                  />
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Accepted Timeframe</label>
-                  <select
-                    value={editingInstance.accepted_timeframe || 'all'}
-                    onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, accepted_timeframe: e.target.value } : null)}
-                    style={{ background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', outline: 'none' }}
-                  >
-                    <option value="all">All Timeframes</option>
-                    <option value="1">1 min</option>
-                    <option value="3">3 mins</option>
-                    <option value="5">5 mins</option>
-                    <option value="15">15 mins</option>
-                    <option value="30">30 mins</option>
-                    <option value="60">1 hour</option>
-                    <option value="240">4 hours</option>
-                    <option value="D">Daily</option>
-                  </select>
                 </div>
               </div>
 
@@ -715,20 +601,6 @@ const Copier = () => {
                     style={{ background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', fontFamily: 'monospace', outline: 'none' }}
                   />
                 </div>
-              </div>
-
-              {/* Inline switches */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--bg-app)', border: '1px solid var(--border-color)', padding: '6px 8px', marginTop: '4px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  <span style={{ fontSize: '10px', color: 'var(--text-main)', fontWeight: 'bold' }}>ZMQ Auto-Trading Mode</span>
-                  <span style={{ fontSize: '8px', color: 'var(--text-muted)' }}>Executes trades instantly without popup dialogs</span>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={editingInstance.auto_trade === 1}
-                  onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, auto_trade: e.target.checked ? 1 : 0 } : null)}
-                  style={{ cursor: 'pointer', accentColor: 'var(--color-active)', marginLeft: 'auto' }}
-                />
               </div>
 
             </div>
