@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'r
 import Dashboard from './components/Dashboard';
 import Copier from './components/Copier';
 import Settings from './components/Settings';
+import PortfolioManagement from './components/PortfolioManagement';
 import { CommandBar } from './components/shell/CommandBar';
 import { Sidebar } from './components/shell/Sidebar';
 import { StatusLine } from './components/shell/StatusLine';
@@ -13,7 +14,7 @@ import './index.css';
 
 const queryClient = new QueryClient();
 
-/** F1–F3 jump between top-level modules, terminal-style. */
+/** F-keys jump between top-level modules, terminal-style. */
 function FKeyNav() {
   const navigate = useNavigate();
   useEffect(() => {
@@ -50,6 +51,7 @@ function Shell() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/copier" element={<Copier />} />
+            <Route path="/portfolio" element={<PortfolioManagement />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

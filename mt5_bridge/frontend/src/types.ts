@@ -66,3 +66,33 @@ export interface BlockedAction {
   blocked_at: number;
   status: 'PENDING' | 'EXECUTED' | 'DISMISSED';
 }
+
+export interface DailyPnlPoint {
+  date: string;
+  label: string;
+  profit: number;
+}
+
+export interface PortfolioRiskMetrics {
+  peak_drawdown_pct: number;
+  max_risk_usd: number;
+  no_sl_count: number;
+  total_trades: number;
+  win_rate: number | null;
+  profit_factor: number | null;
+  largest_loss: number;
+  best_trade: number;
+  max_loss_streak: number;
+  total_realized: number;
+}
+
+export interface PortfolioOverviewItem {
+  id: number;
+  name: string;
+  group_name: string;
+  account_type: string;
+  copier_role: string;
+  days: number;
+  daily_pnl: DailyPnlPoint[];
+  risk: PortfolioRiskMetrics;
+}

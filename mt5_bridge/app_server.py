@@ -686,7 +686,15 @@ def _query_trade_stats(c, inst_id, ts_from, ts_to):
     wins = sum(1 for p in profits if p > 0)
     win_rate = (wins / total * 100.0) if total else None
     largest_loss = min(profits) if profits else 0.0
+    best_trade = max(profits) if profits else 0.0
     total_realized = sum(profits)
+
+    gross_profit = sum(p for p in profits if p > 0)
+    gross_loss = sum(p for p in profits if p < 0)
+    if gross_loss < 0:
+        profit_factor = gross_profit / abs(gross_loss)
+    else:
+        profit_factor = 99.9 if gross_profit > 0 else None
 
     max_streak = 0
     cur_streak = 0
@@ -700,7 +708,37 @@ def _query_trade_stats(c, inst_id, ts_from, ts_to):
     return {
         "total_trades": total, "win_rate": win_rate, "largest_loss": largest_loss,
         "max_loss_streak": max_streak, "total_realized": total_realized,
+        "best_trade": best_trade, "profit_factor": profit_factor,
+        "gross_profit": gross_profit, "gross_loss": gross_loss,
     }
+
+
+def _query_daily_pnl(c, inst_id, days):
+    """Ascending list of {date, label, profit} for the trailing `days` window,
+    one entry per calendar day (0.0 where no trades closed). DB-only (reads
+    trading_log, kept fresh by trading_log_sync_thread) — no live MT5 call,
+    so this is safe to call from a request handler without touching mt5_lock."""
+    now = datetime.utcnow()
+    ts_from = int((now - timedelta(days=days)).timestamp())
+    ts_to = int(now.timestamp())
+
+    c.execute(
+        "SELECT COALESCE(local_time, time) as t, profit FROM trading_log WHERE instance_id = ? AND COALESCE(local_time, time) >= ? AND COALESCE(local_time, time) < ?",
+        (inst_id, ts_from, ts_to)
+    )
+    daily_totals = {}
+    for t, profit in c.fetchall():
+        if t is None or profit is None:
+            continue
+        date_str = datetime.utcfromtimestamp(t).strftime('%Y-%m-%d')
+        daily_totals[date_str] = daily_totals.get(date_str, 0.0) + profit
+
+    out = []
+    for i in range(days, -1, -1):
+        d = now - timedelta(days=i)
+        date_str = d.strftime('%Y-%m-%d')
+        out.append({"date": date_str, "label": d.strftime('%m/%d'), "profit": round(daily_totals.get(date_str, 0.0), 2)})
+    return out
 
 
 def _parse_drawdown_levels(raw):
@@ -1209,6 +1247,59 @@ def api_instances():
         conn.commit()
         conn.close()
         return jsonify({"status": "success"})
+
+@flask_app.route('/api/portfolio_overview', methods=['GET'])
+def api_portfolio_overview():
+    """Per-instance risk metrics + daily P&L series for the trailing N days
+    (default 90, i.e. 'last quarter'). Deliberately DB-only — no MT5 calls —
+    so the Portfolio Management page can hit this freely without contending
+    with the poller's mt5_lock. The frontend anchors the equity curve to
+    each instance's *live* equity (already streamed over the socket) and
+    walks these daily deltas backwards from there."""
+    days = int(request.args.get('days', 90))
+    days = max(1, min(days, 365))
+
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    c.execute("SELECT id, name, group_name, account_type, copier_role FROM instances ORDER BY id ASC")
+    instances = c.fetchall()
+
+    now = datetime.utcnow()
+    date_from = (now - timedelta(days=days)).strftime('%Y-%m-%d')
+    date_to = now.strftime('%Y-%m-%d')
+    ts_from = int((now - timedelta(days=days)).timestamp())
+    ts_to = int(now.timestamp())
+
+    result = []
+    for inst_id, name, group_name, account_type, copier_role in instances:
+        risk = _query_risk_range(c, inst_id, date_from, date_to)
+        stats = _query_trade_stats(c, inst_id, ts_from, ts_to)
+        daily_pnl = _query_daily_pnl(c, inst_id, days)
+
+        result.append({
+            "id": inst_id,
+            "name": name,
+            "group_name": group_name or 'Ungrouped',
+            "account_type": account_type or 'PERSONAL',
+            "copier_role": copier_role or 'NONE',
+            "days": days,
+            "daily_pnl": daily_pnl,
+            "risk": {
+                "peak_drawdown_pct": risk["peak_drawdown_pct"],
+                "max_risk_usd": risk["max_risk_usd"],
+                "no_sl_count": risk["no_sl_count"],
+                "total_trades": stats["total_trades"],
+                "win_rate": stats["win_rate"],
+                "profit_factor": stats["profit_factor"],
+                "largest_loss": stats["largest_loss"],
+                "best_trade": stats["best_trade"],
+                "max_loss_streak": stats["max_loss_streak"],
+                "total_realized": stats["total_realized"],
+            },
+        })
+
+    conn.close()
+    return jsonify(result)
 
 @flask_app.route('/api/copier_instances', methods=['GET'])
 def api_copier_instances():

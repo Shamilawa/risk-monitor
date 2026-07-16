@@ -6,7 +6,7 @@ import type { CSSProperties, ReactNode } from 'react';
    from the phosphor token layer in theme/terminal.css.
    ============================================================ */
 
-type Tone = 'accent' | 'success' | 'error' | 'warning' | 'muted' | 'main';
+export type Tone = 'accent' | 'success' | 'error' | 'warning' | 'muted' | 'main';
 
 const toneColor: Record<Tone, string> = {
   accent: 'var(--terminal-accent)',
@@ -80,6 +80,63 @@ export function Meter({
       </span>
       {showPct && <span>{String(Math.round(clamped)).padStart(3, ' ')}%</span>}
     </span>
+  );
+}
+
+/* ---- Bordered stat tile: label + big value, optional sub-line ---- */
+export function MetricTile({
+  label,
+  value,
+  tone = 'main',
+  sub,
+  style,
+}: {
+  label: string;
+  value: ReactNode;
+  tone?: Tone;
+  sub?: string;
+  style?: CSSProperties;
+}) {
+  return (
+    <div
+      style={{
+        border: '1px solid var(--border-color)',
+        background: 'var(--bg-app)',
+        padding: '8px 10px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '4px',
+        minWidth: 0,
+        ...style,
+      }}
+    >
+      <span
+        style={{
+          fontSize: '9px',
+          fontWeight: 700,
+          letterSpacing: '0.08em',
+          textTransform: 'uppercase',
+          color: 'var(--text-muted)',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {label}
+      </span>
+      <span
+        style={{
+          fontSize: '14px',
+          fontWeight: 700,
+          fontVariantNumeric: 'tabular-nums',
+          color: toneColor[tone],
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {value}
+      </span>
+      {sub && <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>{sub}</span>}
+    </div>
   );
 }
 

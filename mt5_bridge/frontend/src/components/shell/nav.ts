@@ -18,11 +18,12 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { label: 'Dashboard', href: '/', fkey: 'F1', code: 'MON' },
       { label: 'Trade Copier', href: '/copier', fkey: 'F2', code: 'CPR' },
+      { label: 'Portfolio Mgmt', href: '/portfolio', fkey: 'F3', code: 'PTF' },
     ],
   },
   {
     label: 'System',
-    items: [{ label: 'Settings', href: '/settings', fkey: 'F3', code: 'CFG' }],
+    items: [{ label: 'Settings', href: '/settings', fkey: 'F4', code: 'CFG' }],
   },
 ];
 

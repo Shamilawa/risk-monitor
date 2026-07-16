@@ -21,7 +21,7 @@ export function StatusLine() {
       }}
     >
       <span style={{ color: 'var(--terminal-accent)', fontWeight: 700 }}>READY</span>
-      <span>[F1-F3] NAV</span>
+      <span>[F1-F4] NAV</span>
       <span>[◈] PHOSPHOR</span>
       <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
         <span
