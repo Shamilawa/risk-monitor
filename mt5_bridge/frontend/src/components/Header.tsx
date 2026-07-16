@@ -58,9 +58,6 @@ const Header = () => {
             <NavLink to="/copier" className={({ isActive }) => `th-tab ${isActive ? 'active' : ''}`}>
               Trade Copier
             </NavLink>
-            <NavLink to="/review" className={({ isActive }) => `th-tab ${isActive ? 'active' : ''}`}>
-              Review Mode
-            </NavLink>
           </div>
           <div className="th-divider"></div>
           <button id="btn-settings" className="th-btn-ghost">⚙ Settings</button>

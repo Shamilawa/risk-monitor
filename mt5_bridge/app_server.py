@@ -1592,8 +1592,9 @@ def api_close_group():
     
     return jsonify({"status": "success", "message": f"Closed {total_closed} positions in group {group_name}."})
 
-@flask_app.route('/api/sync_log', methods=['POST'])
-def api_sync_log():
+def sync_trading_log():
+    """Full resync of trading_log from each instance's MT5 deal history.
+    Shared by the manual /api/sync_log route and the periodic background sync thread."""
     logging.info("Syncing trading log from MT5 instances...")
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
@@ -1690,7 +1691,24 @@ def api_sync_log():
     conn.commit()
     conn.close()
     logging.info(f"Sync complete. Synced {total_synced} new deals.")
+    return total_synced
+
+
+@flask_app.route('/api/sync_log', methods=['POST'])
+def api_sync_log():
+    total_synced = sync_trading_log()
     return jsonify({"status": "success", "synced": total_synced})
+
+
+def trading_log_sync_thread():
+    """Keeps trading_log fresh for the weekly/monthly Telegram report stats now
+    that the old manual 'Sync Logs' UI button (Review page) is gone."""
+    while True:
+        try:
+            sync_trading_log()
+        except Exception as e:
+            logging.error(f"Trading log sync thread error: {e}")
+        time.sleep(900)
 
 @flask_app.route('/api/performance', methods=['GET'])
 def api_performance():
@@ -2411,6 +2429,7 @@ def main():
     threading.Thread(target=copier_manager_thread, daemon=True).start()
     threading.Thread(target=news_calendar_thread, daemon=True).start()
     threading.Thread(target=telegram_listener_thread, daemon=True).start()
+    threading.Thread(target=trading_log_sync_thread, daemon=True).start()
     
     # Setup Ngrok
     
