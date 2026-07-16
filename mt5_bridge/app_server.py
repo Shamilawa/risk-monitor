@@ -281,6 +281,13 @@ def init_db():
         c.execute("ALTER TABLE instances ADD COLUMN alert_drawdown_levels TEXT DEFAULT '2,4,6,8,10'")
     except sqlite3.OperationalError: pass
 
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN news_block_before_min REAL DEFAULT 2.0")
+    except sqlite3.OperationalError: pass
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN news_block_after_min REAL DEFAULT 2.0")
+    except sqlite3.OperationalError: pass
+
     c.execute('''
         CREATE TABLE IF NOT EXISTS trading_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1116,7 +1123,7 @@ def api_instances():
     
     if request.method == 'GET':
         try:
-            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels FROM instances ORDER BY id ASC")
+            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels, news_block_before_min, news_block_after_min FROM instances ORDER BY id ASC")
         except sqlite3.OperationalError:
             try:
                 c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name FROM instances ORDER BY id ASC")
@@ -1163,7 +1170,9 @@ def api_instances():
                 "alert_daily_profit_target": r[16] if len(r) > 16 else 0.0,
                 "account_type": r[17] if len(r) > 17 else 'PERSONAL',
                 "alert_profit_lock_pct": r[18] if len(r) > 18 else 0.0,
-                "alert_drawdown_levels": r[19] if len(r) > 19 and r[19] else '2,4,6,8,10'
+                "alert_drawdown_levels": r[19] if len(r) > 19 and r[19] else '2,4,6,8,10',
+                "news_block_before_min": r[20] if len(r) > 20 and r[20] is not None else 2.0,
+                "news_block_after_min": r[21] if len(r) > 21 and r[21] is not None else 2.0
             })
         conn.close()
         return jsonify(instances)
@@ -1183,6 +1192,8 @@ def api_instances():
         account_type = data.get('account_type', 'PERSONAL')
         alert_profit_lock_pct = float(data.get('alert_profit_lock_pct', 0.0))
         alert_drawdown_levels = _format_drawdown_levels(_parse_drawdown_levels(data.get('alert_drawdown_levels', '2,4,6,8,10'))) or '2,4,6,8,10'
+        news_block_before_min = float(data.get('news_block_before_min', 2.0))
+        news_block_after_min = float(data.get('news_block_after_min', 2.0))
         import time
         profit_limit_start_time = int(time.time())
 
@@ -1191,7 +1202,7 @@ def api_instances():
             return jsonify({"error": "Name and path required"}), 400
 
         try:
-            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels))
+            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels, news_block_before_min, news_block_after_min) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels, news_block_before_min, news_block_after_min))
         except sqlite3.OperationalError:
             try:
                 c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time))
@@ -1201,7 +1212,7 @@ def api_instances():
         conn.commit()
         new_id = c.lastrowid
         conn.close()
-        return jsonify({"id": new_id, "name": name, "path": path, "risk_usd": risk_usd, "symbol_mapping": symbol_mapping, "auto_trade": auto_trade, "accepted_timeframe": accepted_timeframe, "profit_limit": profit_limit, "account_type": account_type, "alert_drawdown_levels": alert_drawdown_levels}), 201
+        return jsonify({"id": new_id, "name": name, "path": path, "risk_usd": risk_usd, "symbol_mapping": symbol_mapping, "auto_trade": auto_trade, "accepted_timeframe": accepted_timeframe, "profit_limit": profit_limit, "account_type": account_type, "alert_drawdown_levels": alert_drawdown_levels, "news_block_before_min": news_block_before_min, "news_block_after_min": news_block_after_min}), 201
         
     elif request.method == 'PUT':
         data = request.json
@@ -1219,13 +1230,15 @@ def api_instances():
         account_type = data.get('account_type', 'PERSONAL')
         alert_profit_lock_pct = float(data.get('alert_profit_lock_pct', 0.0))
         alert_drawdown_levels = _format_drawdown_levels(_parse_drawdown_levels(data.get('alert_drawdown_levels', '2,4,6,8,10'))) or '2,4,6,8,10'
+        news_block_before_min = float(data.get('news_block_before_min', 2.0))
+        news_block_after_min = float(data.get('news_block_after_min', 2.0))
 
         if not instance_id or not name or not path:
             conn.close()
             return jsonify({"error": "ID, name and path required"}), 400
 
         try:
-            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=?, group_name=?, alert_drawdown_limit=?, alert_daily_profit_target=?, account_type=?, alert_profit_lock_pct=?, alert_drawdown_levels=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels, instance_id))
+            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=?, group_name=?, alert_drawdown_limit=?, alert_daily_profit_target=?, account_type=?, alert_profit_lock_pct=?, alert_drawdown_levels=?, news_block_before_min=?, news_block_after_min=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels, news_block_before_min, news_block_after_min, instance_id))
         except sqlite3.OperationalError:
             try:
                 c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, instance_id))
@@ -2245,7 +2258,7 @@ def copier_manager_thread():
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
             try:
-                c.execute("SELECT id, path, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, symbol_mapping, account_type FROM instances WHERE copier_role IN ('PROVIDER', 'CONSUMER')")
+                c.execute("SELECT id, path, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, symbol_mapping, account_type, news_block_before_min, news_block_after_min FROM instances WHERE copier_role IN ('PROVIDER', 'CONSUMER')")
                 active_copiers = c.fetchall()
             except sqlite3.OperationalError:
                 active_copiers = []
@@ -2276,7 +2289,9 @@ def copier_manager_thread():
                         '--risk_usd', str(r[5]),
                         '--risk_mult', str(r[6]),
                         '--symbol_mapping', str(r[7] if len(r) > 7 and r[7] else '{}'),
-                        '--account_type', str(r[8] if len(r) > 8 and r[8] else 'PERSONAL')
+                        '--account_type', str(r[8] if len(r) > 8 and r[8] else 'PERSONAL'),
+                        '--news_before_min', str(r[9] if len(r) > 9 and r[9] is not None else 2.0),
+                        '--news_after_min', str(r[10] if len(r) > 10 and r[10] is not None else 2.0),
                     ]
                     p = subprocess.Popen(cmd)
                     copier_workers[cid] = {'process': p, 'config': r}
@@ -2290,6 +2305,13 @@ def copier_manager_thread():
 # --- NEWS BLACKOUT (PROP FIRM) ---
 
 _news_state = {"last_success_date": None, "failure_alerted_date": None}
+
+# Tracks which of today's high-impact events already got their T-15min
+# Telegram heads-up. Reset whenever the date rolls over. Keyed by event_time
+# (an absolute epoch, so no collision risk even without the daily reset —
+# the reset just keeps the set from growing unbounded across long uptimes).
+_news_reminder_state = {"date": "", "alerted": set()}
+NEWS_REMINDER_LEAD_SEC = 15 * 60
 
 def _format_news_summary(windows, date_str):
     lines = [f"✅ News Calendar Fetched — {len(windows)} high-impact events today ({date_str}):"]
@@ -2313,6 +2335,64 @@ def _attempt_news_fetch():
             if attempt < 2:
                 time.sleep(5 if attempt == 0 else 15)
     return False, []
+
+def _check_news_blackout_reminders():
+    """Ticks every 60s alongside the daily fetch (see news_calendar_thread).
+    Once today's events are on disk — whether from the auto-fetch or a
+    manual entry — this fires a Telegram heads-up ~15 minutes before each
+    event's blackout window actually opens, without needing per-event
+    timers: it's just a threshold crossing checked on every tick.
+
+    Each PROPFIRM/CONSUMER instance can configure its own before/after
+    blackout width (different prop firms restrict different amounts of
+    time around news), so "when the blackout opens" is instance-specific.
+    Instances sharing the same before-minutes are grouped into one message
+    instead of sending a duplicate per instance."""
+    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    if _news_reminder_state["date"] != today_str:
+        _news_reminder_state["date"] = today_str
+        _news_reminder_state["alerted"] = set()
+
+    payload = news_calendar.load_windows_file()
+    events = payload.get("events", [])
+    if not events:
+        return
+
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    try:
+        c.execute("SELECT name, news_block_before_min FROM instances WHERE account_type = 'PROPFIRM' AND copier_role = 'CONSUMER'")
+        rows = c.fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    conn.close()
+    if not rows:
+        return
+
+    groups = {}
+    for name, before_min in rows:
+        bm = before_min if before_min is not None else 2.0
+        groups.setdefault(bm, []).append(name)
+
+    now_epoch = time.time()
+    for w in events:
+        event_time = w.get("event_time")
+        if event_time is None:
+            continue
+        for before_min, names in groups.items():
+            alert_key = (event_time, before_min)
+            if alert_key in _news_reminder_state["alerted"]:
+                continue
+            blackout_start = event_time - before_min * 60
+            alert_at = blackout_start - NEWS_REMINDER_LEAD_SEC
+            if alert_at <= now_epoch < blackout_start:
+                local_time = datetime.fromtimestamp(event_time).strftime('%H:%M')
+                names_str = ", ".join(names)
+                send_telegram_message(
+                    f"🔔 News blackout in 15 min: {w['currency']} {w['title']} at {local_time} "
+                    f"(blocks {before_min:g} min before — {names_str})."
+                )
+                _news_reminder_state["alerted"].add(alert_key)
 
 def news_calendar_thread():
     while True:
@@ -2342,6 +2422,8 @@ def news_calendar_thread():
                             "timezone) so I can enter it manually in the News panel."
                         )
                         _news_state["failure_alerted_date"] = today_str
+
+            _check_news_blackout_reminders()
         except Exception as e:
             logging.error(f"News calendar thread error: {e}")
         time.sleep(60)

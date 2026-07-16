@@ -139,6 +139,8 @@ const Copier = () => {
         alert_daily_profit_target: updatedInst.alert_daily_profit_target !== undefined ? updatedInst.alert_daily_profit_target : (original.alert_daily_profit_target || 0),
         alert_profit_lock_pct: updatedInst.alert_profit_lock_pct !== undefined ? updatedInst.alert_profit_lock_pct : (original.alert_profit_lock_pct || 0),
         account_type: updatedInst.account_type !== undefined ? updatedInst.account_type : (original.account_type || 'PERSONAL'),
+        news_block_before_min: updatedInst.news_block_before_min !== undefined ? updatedInst.news_block_before_min : (original.news_block_before_min ?? 2.0),
+        news_block_after_min: updatedInst.news_block_after_min !== undefined ? updatedInst.news_block_after_min : (original.news_block_after_min ?? 2.0),
         group_name: original.group_name || 'Ungrouped',
       };
 
@@ -218,6 +220,8 @@ const Copier = () => {
       alert_daily_profit_target: 0,
       alert_profit_lock_pct: 0,
       account_type: 'PERSONAL',
+      news_block_before_min: 2.0,
+      news_block_after_min: 2.0,
     });
   };
 
@@ -243,6 +247,8 @@ const Copier = () => {
           alert_daily_profit_target: editingInstance.alert_daily_profit_target || 0,
           alert_profit_lock_pct: editingInstance.alert_profit_lock_pct || 0,
           account_type: editingInstance.account_type || 'PERSONAL',
+          news_block_before_min: editingInstance.news_block_before_min ?? 2.0,
+          news_block_after_min: editingInstance.news_block_after_min ?? 2.0,
         },
         {
           onSuccess: () => setEditingInstance(null),
@@ -259,6 +265,8 @@ const Copier = () => {
           alert_daily_profit_target: editingInstance.alert_daily_profit_target,
           alert_profit_lock_pct: editingInstance.alert_profit_lock_pct,
           account_type: editingInstance.account_type,
+          news_block_before_min: editingInstance.news_block_before_min,
+          news_block_after_min: editingInstance.news_block_after_min,
         },
         {
           onSuccess: () => setEditingInstance(null),
@@ -562,6 +570,32 @@ const Copier = () => {
                 <option value="PROPFIRM">Prop Firm</option>
               </TermSelect>
             </Field>
+
+            {editingInstance.account_type === 'PROPFIRM' && (
+              <>
+                <SectionLabel>News Blackout Window</SectionLabel>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <Field label="Block Before News (min)" hint="Minutes before each high-impact event to start blocking">
+                    <TermInput
+                      type="number"
+                      step="0.5"
+                      min="0"
+                      value={editingInstance.news_block_before_min ?? 2.0}
+                      onChange={(e) => setEditingInstance((prev) => (prev ? { ...prev, news_block_before_min: parseFloat(e.target.value) } : null))}
+                    />
+                  </Field>
+                  <Field label="Block After News (min)" hint="Minutes after each high-impact event to keep blocking">
+                    <TermInput
+                      type="number"
+                      step="0.5"
+                      min="0"
+                      value={editingInstance.news_block_after_min ?? 2.0}
+                      onChange={(e) => setEditingInstance((prev) => (prev ? { ...prev, news_block_after_min: parseFloat(e.target.value) } : null))}
+                    />
+                  </Field>
+                </div>
+              </>
+            )}
 
             <SectionLabel>Telegram Alerts</SectionLabel>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>

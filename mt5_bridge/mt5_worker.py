@@ -270,7 +270,10 @@ def consumer_loop(sub_socket, args):
         """Only touched for PropFirm instances. Returns a human-readable
         block reason, or None if not currently blocked."""
         windows_payload = news_calendar.get_cached_windows(news_cache)
-        blocked, window = news_calendar.is_blocked_now(symbol, windows_payload)
+        blocked, window = news_calendar.is_blocked_now(
+            symbol, windows_payload,
+            before_sec=args.news_before_min * 60, after_sec=args.news_after_min * 60
+        )
         if not blocked:
             return None
         if window is None:
@@ -397,6 +400,8 @@ if __name__ == "__main__":
     parser.add_argument("--risk_mult", type=float, default=1.0)
     parser.add_argument("--symbol_mapping", type=str, default='{}')
     parser.add_argument("--account_type", type=str, default="PERSONAL", choices=["PERSONAL", "PROPFIRM"])
+    parser.add_argument("--news_before_min", type=float, default=2.0)
+    parser.add_argument("--news_after_min", type=float, default=2.0)
 
     args = parser.parse_args()
     

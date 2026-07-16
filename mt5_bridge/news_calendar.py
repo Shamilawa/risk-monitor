@@ -120,17 +120,25 @@ def symbol_matches_currency(symbol: str, currency: str) -> bool:
     return False
 
 
-def is_blocked_now(symbol: str, windows_payload: dict, now_epoch: float = None):
+def is_blocked_now(symbol: str, windows_payload: dict, now_epoch: float = None,
+                    before_sec: float = None, after_sec: float = None):
     """Hot path: zero I/O, numeric loop over a small in-memory list.
     Returns (blocked: bool, window: dict|None). window is None either when
     not blocked, or when blocked because the feed status is FAILED (fail
-    closed unconditionally, not tied to any specific event)."""
+    closed unconditionally, not tied to any specific event).
+
+    before_sec/after_sec let a caller (a specific prop-firm instance) apply
+    its OWN blackout width instead of the window's precomputed start/end —
+    different prop firms restrict different amounts of time around news.
+    Pass None for either to fall back to the precomputed value."""
     if windows_payload.get("status") == "FAILED":
         return True, None
 
     now_epoch = time.time() if now_epoch is None else now_epoch
     for w in windows_payload.get("events", []):
-        if w["start"] <= now_epoch <= w["end"] and symbol_matches_currency(symbol, w["currency"]):
+        start = (w["event_time"] - before_sec) if before_sec is not None else w["start"]
+        end = (w["event_time"] + after_sec) if after_sec is not None else w["end"]
+        if start <= now_epoch <= end and symbol_matches_currency(symbol, w["currency"]):
             return True, w
     return False, None
 

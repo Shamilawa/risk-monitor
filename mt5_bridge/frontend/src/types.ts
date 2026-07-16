@@ -35,6 +35,8 @@ export interface Instance {
   alert_daily_profit_target?: number;
   alert_profit_lock_pct?: number;
   account_type?: string;
+  news_block_before_min?: number;
+  news_block_after_min?: number;
 }
 
 export interface NewsWindow {
