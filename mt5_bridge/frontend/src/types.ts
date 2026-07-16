@@ -31,6 +31,7 @@ export interface Instance {
   symbol_mapping?: string;
   group_name?: string;
   alert_drawdown_limit?: number;
+  alert_drawdown_levels?: string;
   alert_daily_profit_target?: number;
   alert_profit_lock_pct?: number;
   account_type?: string;

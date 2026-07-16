@@ -134,7 +134,7 @@ const Copier = () => {
         name: updatedInst.name !== undefined ? updatedInst.name : original.name,
         path: updatedInst.path !== undefined ? updatedInst.path : original.path,
         symbol_mapping: updatedInst.symbol_mapping !== undefined ? updatedInst.symbol_mapping : (original.symbol_mapping || '{}'),
-        alert_drawdown_limit: updatedInst.alert_drawdown_limit !== undefined ? updatedInst.alert_drawdown_limit : (original.alert_drawdown_limit || 2.0),
+        alert_drawdown_levels: updatedInst.alert_drawdown_levels !== undefined ? updatedInst.alert_drawdown_levels : (original.alert_drawdown_levels || '2,4,6,8,10'),
         alert_daily_profit_target: updatedInst.alert_daily_profit_target !== undefined ? updatedInst.alert_daily_profit_target : (original.alert_daily_profit_target || 0),
         alert_profit_lock_pct: updatedInst.alert_profit_lock_pct !== undefined ? updatedInst.alert_profit_lock_pct : (original.alert_profit_lock_pct || 0),
         account_type: updatedInst.account_type !== undefined ? updatedInst.account_type : (original.account_type || 'PERSONAL'),
@@ -213,7 +213,7 @@ const Copier = () => {
       path: '',
       copier_role: 'NONE',
       symbol_mapping: '{}',
-      alert_drawdown_limit: 2.0,
+      alert_drawdown_levels: '2,4,6,8,10',
       alert_daily_profit_target: 0,
       alert_profit_lock_pct: 0,
       account_type: 'PERSONAL',
@@ -238,7 +238,7 @@ const Copier = () => {
           name: editingInstance.name,
           path: editingInstance.path,
           symbol_mapping: editingInstance.symbol_mapping || '{}',
-          alert_drawdown_limit: editingInstance.alert_drawdown_limit || 2.0,
+          alert_drawdown_levels: editingInstance.alert_drawdown_levels || '2,4,6,8,10',
           alert_daily_profit_target: editingInstance.alert_daily_profit_target || 0,
           alert_profit_lock_pct: editingInstance.alert_profit_lock_pct || 0,
           account_type: editingInstance.account_type || 'PERSONAL',
@@ -254,7 +254,7 @@ const Copier = () => {
           id: editingInstance.id,
           name: editingInstance.name,
           path: editingInstance.path,
-          alert_drawdown_limit: editingInstance.alert_drawdown_limit,
+          alert_drawdown_levels: editingInstance.alert_drawdown_levels,
           alert_daily_profit_target: editingInstance.alert_daily_profit_target,
           alert_profit_lock_pct: editingInstance.alert_profit_lock_pct,
           account_type: editingInstance.account_type,
@@ -580,15 +580,15 @@ const Copier = () => {
               {/* Alert Configs */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Telegram: Alert Drawdown Limit (%)</label>
+                  <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Telegram: Drawdown Alert Levels (%)</label>
                   <input
-                    type="number"
-                    value={editingInstance.alert_drawdown_limit ?? 2.0}
-                    onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, alert_drawdown_limit: parseFloat(e.target.value) } : null)}
-                    placeholder="2.0"
-                    step="0.1"
+                    type="text"
+                    value={editingInstance.alert_drawdown_levels ?? '2,4,6,8,10'}
+                    onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, alert_drawdown_levels: e.target.value } : null)}
+                    placeholder="2,4,6,8,10"
                     style={{ background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', fontFamily: 'monospace', outline: 'none' }}
                   />
+                  <span style={{ fontSize: '8px', color: 'var(--text-muted)' }}>Comma-separated %, one alert per level as drawdown climbs</span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
                   <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Telegram: Profit Lock Target (%)</label>

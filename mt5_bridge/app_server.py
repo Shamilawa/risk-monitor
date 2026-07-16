@@ -277,6 +277,10 @@ def init_db():
         c.execute("ALTER TABLE instances ADD COLUMN alert_profit_lock_pct REAL DEFAULT 0")
     except sqlite3.OperationalError: pass
 
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN alert_drawdown_levels TEXT DEFAULT '2,4,6,8,10'")
+    except sqlite3.OperationalError: pass
+
     c.execute('''
         CREATE TABLE IF NOT EXISTS trading_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -525,6 +529,7 @@ def fetch_instance_data(inst):
     alert_daily_profit_target = inst[11] if len(inst) > 11 else 0.0
     account_type = inst[12] if len(inst) > 12 else 'PERSONAL'
     alert_profit_lock_pct = inst[13] if len(inst) > 13 else 0.0
+    alert_drawdown_levels = inst[14] if len(inst) > 14 else '2,4,6,8,10'
 
     try:
         with mt5_lock:
@@ -552,6 +557,7 @@ def fetch_instance_data(inst):
                 "alert_daily_profit_target": alert_daily_profit_target,
                 "account_type": account_type,
                 "alert_profit_lock_pct": alert_profit_lock_pct,
+                "alert_drawdown_levels": alert_drawdown_levels,
                 "positions": [],
                 "historical_equity": {"labels": [], "data": []}
             }
@@ -697,6 +703,29 @@ def _query_trade_stats(c, inst_id, ts_from, ts_to):
     }
 
 
+def _parse_drawdown_levels(raw):
+    """Comma-separated ascending drawdown %% thresholds, e.g. '2,4,6,8,10'.
+    Blank/unparseable/non-positive entries are dropped silently; result is sorted+deduped."""
+    if not raw:
+        return []
+    levels = []
+    for part in str(raw).split(','):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            v = float(part)
+        except ValueError:
+            continue
+        if v > 0:
+            levels.append(v)
+    return sorted(set(levels))
+
+
+def _format_drawdown_levels(levels):
+    return ",".join(("%g" % v) for v in levels)
+
+
 def build_risk_report(period, risk_payload, c, date_from, date_to, ts_from=None, ts_to=None, title_suffix=""):
     title = {"daily": "Daily Risk Report", "weekly": "Weekly Risk Report", "monthly": "Monthly Risk Report"}[period]
     lines = [f"🛡️ **{title}**{title_suffix}"]
@@ -704,7 +733,8 @@ def build_risk_report(period, risk_payload, c, date_from, date_to, ts_from=None,
     for r in risk_payload:
         inst_id = r["id"]
         inst_name = r["name"]
-        dd_limit = r.get("alert_drawdown_limit", 2.0)
+        dd_levels = _parse_drawdown_levels(r.get("alert_drawdown_levels", ""))
+        dd_limit = dd_levels[0] if dd_levels else 0
 
         risk = _query_risk_range(c, inst_id, date_from, date_to)
         breach_flag = " ⚠️ breached limit" if dd_limit > 0 and risk["peak_drawdown_pct"] >= dd_limit else ""
@@ -735,7 +765,7 @@ def poller_thread():
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
             try:
-                c.execute("SELECT id, name, path, symbol_suffix, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct FROM instances")
+                c.execute("SELECT id, name, path, symbol_suffix, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels FROM instances")
             except sqlite3.OperationalError:
                 try:
                     c.execute("SELECT id, name, path, symbol_suffix, group_name FROM instances")
@@ -787,7 +817,7 @@ def poller_thread():
                     online_ids.add(inst_id)
                     
                     drawdown_pct = r.get("drawdown_pct", 0.0)
-                    alert_dd_limit = r.get("alert_drawdown_limit", 2.0)
+                    dd_levels = _parse_drawdown_levels(r.get("alert_drawdown_levels", ""))
 
                     current_tickets = set(p["ticket"] for p in r.get("positions", []))
                     previous_tickets = active_positions_cache.get(inst_id, set())
@@ -800,13 +830,14 @@ def poller_thread():
                             if p["ticket"] in newly_opened_tickets and not p.get("sl"):
                                 no_sl_opened += 1
                     
-                    if alert_dd_limit > 0:
-                        if drawdown_pct >= alert_dd_limit:
-                            if not drawdown_alert_state.get(inst_id, False):
-                                send_telegram_message(f"⚠️ Drawdown Warning: {inst_name} reached {drawdown_pct:.2f}% (Limit: {alert_dd_limit}%)")
-                                drawdown_alert_state[inst_id] = True
-                        elif drawdown_pct < alert_dd_limit - 0.5:
-                            drawdown_alert_state[inst_id] = False
+                    for level in dd_levels:
+                        state_key = (inst_id, level)
+                        if drawdown_pct >= level:
+                            if not drawdown_alert_state.get(state_key, False):
+                                send_telegram_message(f"⚠️ Drawdown Warning: {inst_name} reached {drawdown_pct:.2f}% (Level: {level:g}%)")
+                                drawdown_alert_state[state_key] = True
+                        elif drawdown_pct < level - 0.5:
+                            drawdown_alert_state[state_key] = False
                             
                     # --- Daily risk snapshot (peak drawdown / max risk exposure / no-SL opens) ---
                     total_risk_usd = r.get("total_risk_usd", 0.0)
@@ -1047,7 +1078,7 @@ def api_instances():
     
     if request.method == 'GET':
         try:
-            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct FROM instances ORDER BY id ASC")
+            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels FROM instances ORDER BY id ASC")
         except sqlite3.OperationalError:
             try:
                 c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name FROM instances ORDER BY id ASC")
@@ -1093,7 +1124,8 @@ def api_instances():
                 "alert_drawdown_limit": r[15] if len(r) > 15 else 2.0,
                 "alert_daily_profit_target": r[16] if len(r) > 16 else 0.0,
                 "account_type": r[17] if len(r) > 17 else 'PERSONAL',
-                "alert_profit_lock_pct": r[18] if len(r) > 18 else 0.0
+                "alert_profit_lock_pct": r[18] if len(r) > 18 else 0.0,
+                "alert_drawdown_levels": r[19] if len(r) > 19 and r[19] else '2,4,6,8,10'
             })
         conn.close()
         return jsonify(instances)
@@ -1112,6 +1144,7 @@ def api_instances():
         alert_daily_profit_target = float(data.get('alert_daily_profit_target', 0.0))
         account_type = data.get('account_type', 'PERSONAL')
         alert_profit_lock_pct = float(data.get('alert_profit_lock_pct', 0.0))
+        alert_drawdown_levels = _format_drawdown_levels(_parse_drawdown_levels(data.get('alert_drawdown_levels', '2,4,6,8,10'))) or '2,4,6,8,10'
         import time
         profit_limit_start_time = int(time.time())
 
@@ -1120,17 +1153,17 @@ def api_instances():
             return jsonify({"error": "Name and path required"}), 400
 
         try:
-            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct))
+            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels))
         except sqlite3.OperationalError:
             try:
                 c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time))
             except sqlite3.OperationalError:
                 c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe) VALUES (?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe))
-            
+
         conn.commit()
         new_id = c.lastrowid
         conn.close()
-        return jsonify({"id": new_id, "name": name, "path": path, "risk_usd": risk_usd, "symbol_mapping": symbol_mapping, "auto_trade": auto_trade, "accepted_timeframe": accepted_timeframe, "profit_limit": profit_limit, "account_type": account_type}), 201
+        return jsonify({"id": new_id, "name": name, "path": path, "risk_usd": risk_usd, "symbol_mapping": symbol_mapping, "auto_trade": auto_trade, "accepted_timeframe": accepted_timeframe, "profit_limit": profit_limit, "account_type": account_type, "alert_drawdown_levels": alert_drawdown_levels}), 201
         
     elif request.method == 'PUT':
         data = request.json
@@ -1147,13 +1180,14 @@ def api_instances():
         alert_daily_profit_target = float(data.get('alert_daily_profit_target', 0.0))
         account_type = data.get('account_type', 'PERSONAL')
         alert_profit_lock_pct = float(data.get('alert_profit_lock_pct', 0.0))
+        alert_drawdown_levels = _format_drawdown_levels(_parse_drawdown_levels(data.get('alert_drawdown_levels', '2,4,6,8,10'))) or '2,4,6,8,10'
 
         if not instance_id or not name or not path:
             conn.close()
             return jsonify({"error": "ID, name and path required"}), 400
 
         try:
-            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=?, group_name=?, alert_drawdown_limit=?, alert_daily_profit_target=?, account_type=?, alert_profit_lock_pct=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, instance_id))
+            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=?, group_name=?, alert_drawdown_limit=?, alert_daily_profit_target=?, account_type=?, alert_profit_lock_pct=?, alert_drawdown_levels=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels, instance_id))
         except sqlite3.OperationalError:
             try:
                 c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, instance_id))
