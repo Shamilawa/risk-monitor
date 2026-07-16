@@ -499,13 +499,12 @@ def execute_trade(symbol, action_type, sl, tp, volume, entry_price, instance_pat
             logging.error(f"Error Description: {result.comment}")
             return None
             
-        msg = f"✅ Trade Executed Successfully!\nSymbol: {actual_symbol}\nAction: {action_type.upper()}\nVolume: {volume}\nTicket: {result.order}\nPrice: {price}"
-        
+        msg = f"Trade Executed Successfully!\nSymbol: {actual_symbol}\nAction: {action_type.upper()}\nVolume: {volume}\nTicket: {result.order}\nPrice: {price}"
+
         def notify_async():
             logging.info(msg)
             notify_clients("trade_sound", "play")
-            send_telegram_message(msg)
-            
+
         threading.Thread(target=notify_async).start()
         
         return result.order
@@ -792,10 +791,6 @@ def poller_thread():
 
                     current_tickets = set(p["ticket"] for p in r.get("positions", []))
                     previous_tickets = active_positions_cache.get(inst_id, set())
-                    if inst_id in active_positions_cache:
-                        closed_tickets = previous_tickets - current_tickets
-                        for t in closed_tickets:
-                            send_telegram_message(f"🔒 Trade {t} on {inst_name} Closed")
                     active_positions_cache[inst_id] = current_tickets
 
                     newly_opened_tickets = current_tickets - previous_tickets
