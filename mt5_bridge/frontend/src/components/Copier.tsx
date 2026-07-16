@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Instance } from '../types';
 import NewsPanel from './NewsPanel';
+import { Modal, Field, TermInput, TermSelect, TermButton, SectionLabel } from './ui/Terminal';
 
 const fetchInstances = async (): Promise<Instance[]> => {
   const res = await fetch('/api/instances');
@@ -321,19 +322,19 @@ const Copier = () => {
   };
 
   return (
-    <div className="workspace" style={{ padding: '8px', overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: '8px', height: 'calc(100vh - 36px)' }}>
+    <div style={{ padding: '10px', overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: '10px', height: '100%' }}>
 
       <NewsPanel />
 
       {/* Grid Desk Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-toolbar)', border: '1px solid var(--border-color)', padding: '6px 12px', borderRadius: '2px', flexShrink: 0 }}>
-        <div>
-          <span style={{ fontSize: '12px', fontWeight: 'bold', color: 'var(--text-main)', letterSpacing: '0.5px' }}>COPIER ROUTING MATRIX</span>
-          <span style={{ color: 'var(--text-muted)', fontSize: '10px', marginLeft: '10px' }}>Spreadsheet Desk configuration of Master/Sub accounts</span>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-toolbar)', border: '1px solid var(--border-color)', padding: '8px 12px', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span className="term-glow" style={{ fontSize: '13px', fontWeight: 700, color: 'var(--terminal-accent)', letterSpacing: '0.14em', textTransform: 'uppercase' }}>
+            Copier Routing Matrix
+          </span>
+          <span style={{ color: 'var(--text-muted)', fontSize: '10px' }}>Master / Sub account configuration desk</span>
         </div>
-        <button className="btn-toolbar" style={{ borderColor: 'var(--color-active)', color: 'var(--color-active)', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={handleOpenAddModal}>
-          <span>+ Add Instance</span>
-        </button>
+        <TermButton variant="solid" onClick={handleOpenAddModal}>+ Add Instance</TermButton>
       </div>
 
       {/* Main Matrix Grid Container */}
@@ -366,7 +367,7 @@ const Copier = () => {
                 data.map((inst) => {
                   const isSub = inst.copier_role === 'CONSUMER';
                   const isMaster = inst.copier_role === 'PROVIDER';
-                  const roleColor = isMaster ? '#f39c12' : isSub ? '#3498db' : 'var(--text-muted)';
+                  const roleColor = isMaster ? 'var(--color-pending)' : isSub ? 'var(--terminal-accent)' : 'var(--text-muted)';
                   
                   let mapCount = 0;
                   try {
@@ -400,8 +401,8 @@ const Copier = () => {
                           }}
                         >
                           <option value="NONE" style={{ color: 'var(--text-muted)' }}>Unassigned</option>
-                          <option value="PROVIDER" disabled={hasProvider && !isMaster} style={{ color: '#f39c12' }}>Master (ZMQ Out)</option>
-                          <option value="CONSUMER" style={{ color: '#3498db' }}>Sub (ZMQ In)</option>
+                          <option value="PROVIDER" disabled={hasProvider && !isMaster}>Master (ZMQ Out)</option>
+                          <option value="CONSUMER">Sub (ZMQ In)</option>
                         </select>
                       </td>
 
@@ -517,198 +518,149 @@ const Copier = () => {
 
       {/* MODAL 1: ADD / EDIT INSTANCE DETAILS */}
       {editingInstance && (
-        <div className="modal-overlay active" style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'rgba(0, 0, 0, 0.65)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1100 }}>
-          <div className="modal" style={{ width: '460px', background: 'var(--bg-panel)', border: '1px solid var(--border-dark)', overflow: 'hidden' }}>
-            <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'var(--bg-toolbar)', borderBottom: '1px solid var(--border-color)' }}>
-              <strong style={{ fontSize: '11px', color: 'var(--text-main)' }}>
-                {editingInstance.id === -1 ? 'ADD NEW INSTANCE NODE' : `EDIT NODE: ${editingInstance.name.toUpperCase()}`}
-              </strong>
-              <button
-                className="btn-close-modal"
-                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '16px' }}
-                onClick={() => setEditingInstance(null)}
-              >
-                &times;
-              </button>
-            </div>
-            <div className="modal-body" style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              
-              {/* Instance Name */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Instance Name</label>
-                <input
-                  type="text"
-                  value={editingInstance.name}
-                  onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, name: e.target.value } : null)}
-                  placeholder="e.g. IC Markets Live"
-                  style={{ background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', fontFamily: 'monospace', outline: 'none' }}
-                />
-              </div>
-
-              {/* Path Browser */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>MetaTrader 5 Executable Path</label>
-                <div style={{ display: 'flex', gap: '4px' }}>
-                  <input
-                    type="text"
-                    value={editingInstance.path}
-                    onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, path: e.target.value } : null)}
-                    placeholder="C:\Program Files\...\terminal64.exe"
-                    style={{ flex: 1, background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', fontFamily: 'monospace', outline: 'none' }}
-                  />
-                  <button className="btn-toolbar" style={{ borderColor: 'var(--color-active)', color: 'var(--color-active)' }} onClick={handleBrowsePath}>
-                    Browse...
-                  </button>
-                </div>
-              </div>
-
-              {/* Account Classification */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Account Type</label>
-                  <select
-                    value={editingInstance.account_type || 'PERSONAL'}
-                    onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, account_type: e.target.value } : null)}
-                    style={{ background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', outline: 'none' }}
-                  >
-                    <option value="PERSONAL">Personal</option>
-                    <option value="PROPFIRM">Prop Firm</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Alert Configs */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Telegram: Drawdown Alert Levels (%)</label>
-                  <input
-                    type="text"
-                    value={editingInstance.alert_drawdown_levels ?? '2,4,6,8,10'}
-                    onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, alert_drawdown_levels: e.target.value } : null)}
-                    placeholder="2,4,6,8,10"
-                    style={{ background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', fontFamily: 'monospace', outline: 'none' }}
-                  />
-                  <span style={{ fontSize: '8px', color: 'var(--text-muted)' }}>Comma-separated %, one alert per level as drawdown climbs</span>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  <label style={{ color: 'var(--text-muted)', fontSize: '9px', fontWeight: 'bold' }}>Telegram: Profit Lock Target (%)</label>
-                  <input
-                    type="number"
-                    value={editingInstance.alert_profit_lock_pct ?? 0}
-                    onChange={(e) => setEditingInstance((prev) => prev ? { ...prev, alert_profit_lock_pct: parseFloat(e.target.value) } : null)}
-                    placeholder="0 = Disabled"
-                    step="0.1"
-                    style={{ background: 'var(--bg-app)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '4px', fontSize: '10px', fontFamily: 'monospace', outline: 'none' }}
-                  />
-                </div>
-              </div>
-
-            </div>
-            <div className="modal-footer" style={{ padding: '8px 12px', background: 'var(--bg-toolbar)', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-              <button className="btn-toolbar" style={{ borderColor: 'var(--border-color)' }} onClick={() => setEditingInstance(null)}>
-                Cancel
-              </button>
-              <button className="btn-toolbar" style={{ borderColor: 'var(--color-active)', color: 'var(--color-active)', fontWeight: 'bold' }} onClick={handleSaveInstance}>
+        <Modal
+          title={editingInstance.id === -1 ? 'Add Instance Node' : `Edit Node · ${editingInstance.name}`}
+          width={480}
+          onClose={() => setEditingInstance(null)}
+          footer={
+            <>
+              <TermButton variant="outline" onClick={() => setEditingInstance(null)}>Cancel</TermButton>
+              <TermButton variant="solid" onClick={handleSaveInstance}>
                 {editingInstance.id === -1 ? 'Add Node' : 'Save Changes'}
-              </button>
+              </TermButton>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <Field label="Instance Name">
+              <TermInput
+                type="text"
+                value={editingInstance.name}
+                onChange={(e) => setEditingInstance((prev) => (prev ? { ...prev, name: e.target.value } : null))}
+                placeholder="e.g. IC Markets Live"
+              />
+            </Field>
+
+            <Field label="MetaTrader 5 Executable Path">
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <TermInput
+                  type="text"
+                  value={editingInstance.path}
+                  onChange={(e) => setEditingInstance((prev) => (prev ? { ...prev, path: e.target.value } : null))}
+                  placeholder="C:\Program Files\...\terminal64.exe"
+                />
+                <TermButton variant="outline" onClick={handleBrowsePath} style={{ flexShrink: 0 }}>Browse…</TermButton>
+              </div>
+            </Field>
+
+            <Field label="Account Type">
+              <TermSelect
+                value={editingInstance.account_type || 'PERSONAL'}
+                onChange={(e) => setEditingInstance((prev) => (prev ? { ...prev, account_type: e.target.value } : null))}
+              >
+                <option value="PERSONAL">Personal</option>
+                <option value="PROPFIRM">Prop Firm</option>
+              </TermSelect>
+            </Field>
+
+            <SectionLabel>Telegram Alerts</SectionLabel>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <Field label="Drawdown Alert Levels (%)" hint="Comma-separated %, one alert per level as drawdown climbs">
+                <TermInput
+                  type="text"
+                  value={editingInstance.alert_drawdown_levels ?? '2,4,6,8,10'}
+                  onChange={(e) => setEditingInstance((prev) => (prev ? { ...prev, alert_drawdown_levels: e.target.value } : null))}
+                  placeholder="2,4,6,8,10"
+                />
+              </Field>
+              <Field label="Profit Lock Target (%)" hint="0 = disabled">
+                <TermInput
+                  type="number"
+                  step="0.1"
+                  value={editingInstance.alert_profit_lock_pct ?? 0}
+                  onChange={(e) => setEditingInstance((prev) => (prev ? { ...prev, alert_profit_lock_pct: parseFloat(e.target.value) } : null))}
+                  placeholder="0 = Disabled"
+                />
+              </Field>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* MODAL 2: SYMBOL MAPPING MATRIX CONFIG */}
       {mappingInstance && (
-        <div className="modal-overlay active" style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'rgba(0, 0, 0, 0.65)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1100 }}>
-          <div className="modal" style={{ width: '420px', background: 'var(--bg-panel)', border: '1px solid var(--border-dark)', overflow: 'hidden' }}>
-            <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'var(--bg-toolbar)', borderBottom: '1px solid var(--border-color)' }}>
-              <strong style={{ fontSize: '11px', color: 'var(--text-main)' }}>
-                SYMBOL MAPPING DESK: {mappingInstance.name.toUpperCase()}
-              </strong>
-              <button
-                className="btn-close-modal"
-                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '16px' }}
-                onClick={() => setMappingInstance(null)}
-              >
-                &times;
-              </button>
+        <Modal
+          title={`Symbol Mapping · ${mappingInstance.name}`}
+          width={440}
+          onClose={() => setMappingInstance(null)}
+          footer={
+            <>
+              <TermButton variant="outline" onClick={() => setMappingInstance(null)}>Cancel</TermButton>
+              <TermButton variant="solid" onClick={handleSaveMapping}>Save Mapping</TermButton>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+              Map incoming signals (e.g. TradingView tickers) to broker-specific MT5 symbols.
+            </span>
+
+            {/* Add Mapping Row */}
+            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', background: 'var(--bg-app)', border: '1px solid var(--border-color)', padding: '8px' }}>
+              <TermInput
+                type="text"
+                placeholder="TV Ticker (e.g. XAUUSD)"
+                value={newTvSymbol}
+                onChange={(e) => setNewTvSymbol(e.target.value)}
+              />
+              <span style={{ color: 'var(--terminal-accent)', flexShrink: 0 }}>&rarr;</span>
+              <TermInput
+                type="text"
+                placeholder="MT5 Symbol (e.g. GOLD.m)"
+                value={newMt5Symbol}
+                onChange={(e) => setNewMt5Symbol(e.target.value)}
+              />
+              <TermButton variant="outline" onClick={handleAddMappingItem} style={{ flexShrink: 0 }}>+ Add</TermButton>
             </div>
-            <div className="modal-body" style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              
-              <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>
-                Map incoming signals (e.g. TradingView tickers) to MT5 specific symbols.
-              </span>
 
-              {/* Add Mapping Row */}
-              <div style={{ display: 'flex', gap: '4px', background: 'var(--bg-app)', border: '1px solid var(--border-color)', padding: '6px' }}>
-                <input
-                  type="text"
-                  placeholder="TV Ticker (e.g. XAUUSD)"
-                  value={newTvSymbol}
-                  onChange={(e) => setNewTvSymbol(e.target.value)}
-                  style={{ flex: 1, background: 'var(--bg-panel)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '3px', fontSize: '10px', outline: 'none' }}
-                />
-                <span style={{ color: 'var(--text-muted)', alignSelf: 'center' }}>→</span>
-                <input
-                  type="text"
-                  placeholder="MT5 Symbol (e.g. GOLD.m)"
-                  value={newMt5Symbol}
-                  onChange={(e) => setNewMt5Symbol(e.target.value)}
-                  style={{ flex: 1, background: 'var(--bg-panel)', color: 'var(--text-main)', border: '1px solid var(--border-color)', padding: '3px', fontSize: '10px', outline: 'none' }}
-                />
-                <button className="btn-toolbar" style={{ borderColor: 'var(--color-buy)', color: 'var(--color-buy)' }} onClick={handleAddMappingItem}>
-                  + Add
-                </button>
-              </div>
-
-              {/* Existing Mappings List */}
-              <div style={{ border: '1px solid var(--border-color)', background: 'var(--bg-app)', maxHeight: '180px', overflowY: 'auto' }}>
-                <table className="data-grid" style={{ width: '100%' }}>
-                  <thead>
+            {/* Existing Mappings List */}
+            <div style={{ border: '1px solid var(--border-color)', background: 'var(--bg-app)', maxHeight: '200px', overflowY: 'auto' }}>
+              <table className="data-grid" style={{ width: '100%' }}>
+                <thead>
+                  <tr>
+                    <th style={{ width: '45%' }}>Signal / TV Ticker</th>
+                    <th style={{ width: '45%' }}>Execution / MT5 Symbol</th>
+                    <th style={{ width: '10%', textAlign: 'center' }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tempMappings.length === 0 ? (
                     <tr>
-                      <th style={{ width: '45%' }}>Signal / TV Ticker</th>
-                      <th style={{ width: '45%' }}>Execution / MT5 Symbol</th>
-                      <th style={{ width: '10%', textAlign: 'center' }}></th>
+                      <td colSpan={3} style={{ textAlign: 'center', padding: '14px', color: 'var(--text-muted)' }}>
+                        No symbol mappings defined. Executes raw ticker by default.
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {tempMappings.length === 0 ? (
-                      <tr>
-                        <td colSpan={3} style={{ textAlign: 'center', padding: '12px', color: 'var(--text-muted)' }}>
-                          No symbol mappings defined. Executes raw ticker by default.
+                  ) : (
+                    tempMappings.map((map) => (
+                      <tr key={map.tv}>
+                        <td style={{ fontWeight: 'bold' }}>{map.tv}</td>
+                        <td style={{ color: 'var(--terminal-accent)' }}>{map.mt5}</td>
+                        <td style={{ textAlign: 'center' }}>
+                          <button
+                            style={{ background: 'none', border: 'none', padding: '0 4px', fontSize: '12px', color: 'var(--color-sell)', cursor: 'pointer' }}
+                            onClick={() => handleRemoveMappingItem(map.tv)}
+                          >
+                            &times;
+                          </button>
                         </td>
                       </tr>
-                    ) : (
-                      tempMappings.map((map) => (
-                        <tr key={map.tv}>
-                          <td style={{ fontWeight: 'bold' }}>{map.tv}</td>
-                          <td style={{ color: 'var(--color-active)' }}>{map.mt5}</td>
-                          <td style={{ textAlign: 'center' }}>
-                            <button
-                              className="btn-toolbar"
-                              style={{ padding: '0px 4px', fontSize: '8px', color: 'var(--color-sell)', borderColor: 'transparent' }}
-                              onClick={() => handleRemoveMappingItem(map.tv)}
-                            >
-                              &times;
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-            </div>
-            <div className="modal-footer" style={{ padding: '8px 12px', background: 'var(--bg-toolbar)', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-              <button className="btn-toolbar" style={{ borderColor: 'var(--border-color)' }} onClick={() => setMappingInstance(null)}>
-                Cancel
-              </button>
-              <button className="btn-toolbar" style={{ borderColor: 'var(--color-active)', color: 'var(--color-active)', fontWeight: 'bold' }} onClick={handleSaveMapping}>
-                Save Mapping Desk
-              </button>
+                    ))
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
 
     </div>

@@ -1,0 +1,198 @@
+/* ============================================================
+   TERMINAL UI — phosphor theming layer
+   Imported LAST (after index.css) so these token values win by
+   cascade order. Only "chrome" (accent / borders / muted text)
+   changes per phosphor; buy-green, sell-red and warning-amber
+   stay FIXED across every variant so P&L never lies.
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+/* ---- Base tokens shared by every phosphor ---- */
+:root {
+  /* true-black terminal surfaces */
+  --bg-app: #000000;
+  --bg-panel: #08090b;
+  --bg-toolbar: #0c0d11;
+  --bg-header: #08090b;
+  --bg-row-alt: #050506;
+  --bg-row-hover: #14161d;
+  --bg-secondary: #050506;
+  --bg-magic-row: #0e1017;
+
+  --border-color: #1b1e25;
+  --border-dark: #2b3038;
+
+  --text-main: #e6e8ef;
+  --text-muted: #6b7079;
+
+  /* fixed semantic colors — identical in all phosphors */
+  --color-buy: #00ff66;
+  --color-sell: #ff3b30;
+  --color-buy-bg: rgba(0, 255, 102, 0.10);
+  --color-sell-bg: rgba(255, 59, 48, 0.10);
+  --color-pending: #f5a623;
+  --color-warning: #f5a623;
+  --color-error: #ff3b30;
+  --color-success: #00ff66;
+
+  /* phosphor-driven accent (overridden per variant below) */
+  --terminal-accent: #ffb000;
+  --terminal-accent-dim: #5c3f00;
+  --terminal-accent-soft: rgba(255, 176, 0, 0.12);
+  --on-accent: #000000; /* text/icon color that sits ON a solid accent fill */
+
+  /* legacy alias used throughout the app — now phosphor-driven */
+  --color-active: var(--terminal-accent);
+
+  --term-font: 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
+}
+
+/* ---- Phosphor variants (only chrome changes) ---- */
+:root[data-phosphor='amber'] {
+  --terminal-accent: #ffb000;
+  --terminal-accent-dim: #5c3f00;
+  --terminal-accent-soft: rgba(255, 176, 0, 0.12);
+  --border-color: #221d13;
+  --text-muted: #7b6c4c;
+  --on-accent: #000000;
+}
+:root[data-phosphor='green'] {
+  --terminal-accent: #22e57a;
+  --terminal-accent-dim: #0d5230;
+  --terminal-accent-soft: rgba(34, 229, 122, 0.12);
+  --border-color: #13211a;
+  --text-muted: #5f7a6c;
+  --on-accent: #000000;
+}
+:root[data-phosphor='blue'] {
+  --terminal-accent: #4d9fff;
+  --terminal-accent-dim: #1c3a63;
+  --terminal-accent-soft: rgba(77, 159, 255, 0.12);
+  --border-color: #141b26;
+  --text-muted: #63707f;
+  --on-accent: #000000;
+}
+:root[data-phosphor='cyan'] {
+  --terminal-accent: #2fe0e0;
+  --terminal-accent-dim: #0b5c5c;
+  --terminal-accent-soft: rgba(47, 224, 224, 0.12);
+  --border-color: #122223;
+  --text-muted: #5c7a7b;
+  --on-accent: #000000;
+}
+:root[data-phosphor='red'] {
+  --terminal-accent: #ff5c57;
+  --terminal-accent-dim: #6b1f1c;
+  --terminal-accent-soft: rgba(255, 92, 87, 0.12);
+  --border-color: #241514;
+  --text-muted: #7f605f;
+  --on-accent: #000000;
+}
+:root[data-phosphor='mono'] {
+  --terminal-accent: #d6d9e0;
+  --terminal-accent-dim: #4a4d54;
+  --terminal-accent-soft: rgba(214, 217, 224, 0.10);
+  --border-color: #1f2229;
+  --text-muted: #71767f;
+  --on-accent: #000000;
+}
+
+/* ---- Global terminal treatment ---- */
+body {
+  font-family: var(--term-font) !important;
+}
+
+/* zero radius everywhere — circles become squares, the terminal signature.
+   Scoped exceptions (none currently) would opt back in with their own rule. */
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
+}
+
+/* accent-filled controls must use readable on-accent text, not white */
+.btn-filter.active,
+.btn-primary-premium,
+.btn-action.execute,
+.btn-action.abort {
+  color: var(--on-accent) !important;
+}
+
+/* legacy classes that hard-coded off-palette colors → back onto tokens */
+.tree-header {
+  background-color: var(--bg-toolbar) !important;
+  color: var(--terminal-accent) !important;
+}
+.data-grid tr:hover {
+  background-color: var(--bg-row-hover) !important;
+}
+
+/* ---- CRT flourishes ---- */
+.term-glow {
+  text-shadow: 0 0 6px color-mix(in srgb, var(--terminal-accent) 55%, transparent);
+}
+
+/* subtle scanline + vignette overlay across the whole viewport */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.02) 0px,
+      rgba(255, 255, 255, 0.02) 1px,
+      transparent 1px,
+      transparent 3px
+    ),
+    radial-gradient(ellipse at center, transparent 60%, rgba(0, 0, 0, 0.35) 100%);
+}
+
+/* inverse-highlight selection */
+::selection {
+  background: var(--terminal-accent);
+  color: #000000;
+}
+
+/* thin tinted scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--terminal-accent-dim) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--terminal-accent-dim);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--terminal-accent);
+  background-clip: padding-box;
+}
+
+/* blinking block cursor for prompt-style text */
+.term-cursor::after {
+  content: '\2588';
+  margin-left: 1px;
+  animation: term-blink 1.1s step-end infinite;
+  color: var(--terminal-accent);
+}
+@keyframes term-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}

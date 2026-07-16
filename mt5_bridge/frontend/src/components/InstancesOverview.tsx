@@ -4,6 +4,7 @@ import { useStore } from '../store/useStore';
 import type { Instance, NewsToday } from '../types';
 import { FlashCell } from './FlashCell';
 import { findActiveWindow } from '../utils/news';
+import { StatusTag, SectionLabel } from './ui/Terminal';
 
 interface LeaderLineInstance {
   remove: () => void;
@@ -139,7 +140,7 @@ const InstancesOverview = () => {
   const renderCard = (inst: Instance) => {
     const period = selectedPeriods[inst.id] || 'today';
     const realizedVal = inst.realized_gains?.[period] || 0.0;
-    const gainColor = realizedVal > 0 ? 'var(--color-buy)' : (realizedVal < 0 ? 'var(--color-sell)' : 'var(--text-secondary)');
+    const gainColor = realizedVal > 0 ? 'var(--color-buy)' : (realizedVal < 0 ? 'var(--color-sell)' : 'var(--text-main)');
 
     const floatingPnl = (inst.equity || 0) - (inst.balance || 0);
     const pnlColor = floatingPnl > 0 ? 'var(--color-buy)' : (floatingPnl < 0 ? 'var(--color-sell)' : 'var(--text-main)');
@@ -152,26 +153,20 @@ const InstancesOverview = () => {
     if (inst.copier_role === 'PROVIDER') {
       roleBadge = (
         <>
-          <span className="badge-dense" style={{ background: 'rgba(243, 156, 18, 0.15)', color: '#f39c12', marginLeft: '5px', fontSize: '9px', verticalAlign: 'middle' }}>👑 MASTER</span>
-          <span className="badge-dense" style={{ background: 'rgba(46, 204, 113, 0.15)', color: '#2ecc71', marginLeft: '5px', fontSize: '8px', verticalAlign: 'middle', display: 'inline-flex', alignItems: 'center' }}>
-            <span style={{ display: 'inline-block', width: '6px', height: '6px', background: '#2ecc71', borderRadius: '#50%', marginRight: '3px' }}></span>ZMQ
-          </span>
+          <StatusTag label="MASTER" tone="warning" />
+          <StatusTag label="ZMQ" tone="success" />
         </>
       );
       flexStyle = { width: '260px', flexShrink: 0 };
     } else if (inst.copier_role === 'CONSUMER') {
-      roleBadge = (
-        <span className="badge-dense" style={{ background: 'rgba(52, 152, 219, 0.15)', color: '#3498db', marginLeft: '5px', fontSize: '9px', verticalAlign: 'middle' }}>👥 SUB</span>
-      );
+      roleBadge = <StatusTag label="SUB" tone="accent" />;
       flexStyle = { width: '220px', flexShrink: 0 };
     }
 
     const propFirmBadge = inst.account_type === 'PROPFIRM' ? (
       <>
-        <span className="badge-dense" style={{ background: 'rgba(231, 76, 60, 0.15)', color: '#e74c3c', marginLeft: '5px', fontSize: '9px', verticalAlign: 'middle' }}>🏦 PROPFIRM</span>
-        {newsBlackoutActive && (
-          <span className="badge-dense" style={{ background: 'rgba(231, 76, 60, 0.3)', color: '#e74c3c', marginLeft: '5px', fontSize: '9px', verticalAlign: 'middle', fontWeight: 'bold' }}>⛔ BLACKOUT</span>
-        )}
+        <StatusTag label="PROPFIRM" tone="error" />
+        {newsBlackoutActive && <StatusTag label="BLACKOUT" tone="error" />}
       </>
     ) : null;
 
@@ -184,8 +179,8 @@ const InstancesOverview = () => {
 
       copierInfoHtml = (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2px' }}>
-          <span style={{ color: '#3498db', fontSize: '10px', fontWeight: 'bold' }}>Copier Risk</span>
-          <strong style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>{riskStr}</strong>
+          <span style={{ color: 'var(--terminal-accent)', fontSize: '10px', fontWeight: 'bold' }}>Copier Risk</span>
+          <strong style={{ fontSize: '10px', color: 'var(--text-main)' }}>{riskStr}</strong>
         </div>
       );
     }
@@ -208,12 +203,14 @@ const InstancesOverview = () => {
 
     return (
       <div key={inst.id} id={`health-card-${inst.id}`} className={cardClass} style={{ padding: 0, margin: 0, ...flexStyle, background: 'var(--bg-panel)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column' }}>
-        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 8px', borderBottom: '1px solid var(--border-color)', background: 'var(--bg-toolbar)', fontWeight: 'bold' }}>
-          <div style={{ display: 'flex', alignItems: 'center' }}>
-            <strong style={{ color: 'var(--text-main)', fontSize: '11px' }}>{inst.name}</strong>
-            {roleBadge}
-            {propFirmBadge}
-          </div>
+        <div className="card-header" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '5px', padding: '6px 8px', borderBottom: '1px solid var(--border-color)', background: 'var(--bg-toolbar)' }}>
+          <strong style={{ color: 'var(--text-main)', fontSize: '11px', whiteSpace: 'nowrap' }}>{inst.name}</strong>
+          {(roleBadge || propFirmBadge) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '5px' }}>
+              {roleBadge}
+              {propFirmBadge}
+            </div>
+          )}
         </div>
         <div style={{ padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '10px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -271,8 +268,8 @@ const InstancesOverview = () => {
       )}
 
       {others.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', width: '100%', maxWidth: '1200px', marginTop: '20px' }}>
-          <div style={{ fontSize: '10px', fontWeight: 'bold', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', paddingBottom: '3px' }}>⚙ UNASSIGNED INSTANCES</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%', maxWidth: '1200px', marginTop: '20px' }}>
+          <SectionLabel style={{ paddingBottom: '3px' }}>Unassigned Instances</SectionLabel>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '8px' }}>
             {others.map(renderCard)}
           </div>

@@ -2,6 +2,7 @@ import { useState, Fragment } from 'react';
 import { useStore } from '../store/useStore';
 import type { Position } from '../types';
 import { FlashCell } from './FlashCell';
+import { StatusTag } from './ui/Terminal';
 
 const TrackerTable = () => {
   const instances = useStore((state) => state.instances || []);
@@ -62,9 +63,9 @@ const TrackerTable = () => {
               
               let roleBadge = null;
               if (inst.copier_role === 'PROVIDER') {
-                roleBadge = <span className="badge-dense" style={{ background: 'rgba(243, 156, 18, 0.15)', color: '#f39c12', marginLeft: '5px', fontSize: '9px', verticalAlign: 'middle' }}>👑 MASTER</span>;
+                roleBadge = <StatusTag label="MASTER" tone="warning" style={{ marginLeft: '6px', verticalAlign: 'middle' }} />;
               } else if (inst.copier_role === 'CONSUMER') {
-                roleBadge = <span className="badge-dense" style={{ background: 'rgba(52, 152, 219, 0.15)', color: '#3498db', marginLeft: '5px', fontSize: '9px', verticalAlign: 'middle' }}>👥 SUB</span>;
+                roleBadge = <StatusTag label="SUB" tone="accent" style={{ marginLeft: '6px', verticalAlign: 'middle' }} />;
               }
 
               return (
