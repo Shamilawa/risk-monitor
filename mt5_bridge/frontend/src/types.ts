@@ -34,6 +34,7 @@ export interface Instance {
   alert_drawdown_levels?: string;
   alert_profit_ceiling_usd?: number;
   alert_profit_lock_pct?: number;
+  trade_locked?: boolean;
   account_type?: string;
   news_block_before_min?: number;
   news_block_after_min?: number;

@@ -190,6 +190,22 @@ const Copier = () => {
     },
   });
 
+  const unlockInstanceMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch('/api/instances/unlock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      if (!res.ok) {
+        throw new Error('Failed to unlock instance.');
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['instances'] });
+    },
+  });
+
   if (isLoading) {
     return <div style={{ padding: '20px', fontFamily: 'monospace', color: 'var(--text-muted)' }}>Loading routing matrix desk...</div>;
   }
@@ -390,6 +406,14 @@ const Copier = () => {
                       <td style={{ fontWeight: 'bold' }}>
                         <span style={{ display: 'inline-block', width: '6px', height: '6px', background: 'var(--color-buy)', borderRadius: '50%', marginRight: '6px', verticalAlign: 'middle' }}></span>
                         {inst.name}
+                        {inst.trade_locked && (
+                          <span
+                            style={{ marginLeft: '6px', fontSize: '9px', color: 'var(--color-sell)' }}
+                            title="Trade locked: profit ceiling was reached and positions were closed. Unlock to allow trading again."
+                          >
+                            🔒 LOCKED
+                          </span>
+                        )}
                       </td>
 
                       {/* Copier Role Select Dropdown */}
@@ -505,6 +529,16 @@ const Copier = () => {
                           >
                             Edit
                           </button>
+                          {inst.trade_locked && (
+                            <button
+                              className="btn-toolbar"
+                              style={{ fontSize: '9px', padding: '1px 5px', borderColor: 'var(--color-active)', color: 'var(--color-active)' }}
+                              onClick={() => unlockInstanceMutation.mutate(inst.id)}
+                              title="Clear the profit-ceiling trade lock and allow trading again"
+                            >
+                              🔒 Unlock
+                            </button>
+                          )}
                           <button
                             className="btn-toolbar"
                             style={{ fontSize: '9px', padding: '1px 5px', borderColor: 'var(--color-sell)', color: 'var(--color-sell)' }}

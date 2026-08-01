@@ -295,6 +295,12 @@ def init_db():
         c.execute("ALTER TABLE instances ADD COLUMN news_block_after_min REAL DEFAULT 2.0")
     except sqlite3.OperationalError: pass
 
+    # trade_locked: set by the profit-ceiling auto-close once it books profit on an instance, to
+    # stop it opening any further trades until manually unlocked (POST /api/instances/<id>/unlock).
+    try:
+        c.execute("ALTER TABLE instances ADD COLUMN trade_locked INTEGER DEFAULT 0")
+    except sqlite3.OperationalError: pass
+
     c.execute('''
         CREATE TABLE IF NOT EXISTS trading_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -554,6 +560,7 @@ def fetch_instance_data(inst):
     account_type = inst[12] if len(inst) > 12 else 'PERSONAL'
     alert_profit_lock_pct = inst[13] if len(inst) > 13 else 0.0
     alert_drawdown_levels = inst[14] if len(inst) > 14 else '2,4,6,8,10'
+    trade_locked = bool(inst[15]) if len(inst) > 15 and inst[15] is not None else False
 
     try:
         with mt5_lock:
@@ -582,6 +589,7 @@ def fetch_instance_data(inst):
                 "account_type": account_type,
                 "alert_profit_lock_pct": alert_profit_lock_pct,
                 "alert_drawdown_levels": alert_drawdown_levels,
+                "trade_locked": trade_locked,
                 "positions": [],
                 "historical_equity": {"labels": [], "data": []}
             }
@@ -685,13 +693,6 @@ last_summary_date = ""
 # re-evaluates fresh, rather than risking a stale ARM firing an unattended close.
 profit_lock_state = {}
 profit_lock_lock = threading.Lock()
-
-# Profit-ceiling auto-close: inst_id -> bool, True once we've closed for hitting the ceiling on
-# this "leg" (equity >= alert_profit_ceiling_usd). Resets to False once equity drops back below the
-# ceiling, so a later run-up to the same ceiling triggers again -- this is meant to sweep profit
-# above a fixed equity level repeatedly, not just once. In-memory only, same reasoning as
-# profit_lock_state above.
-profit_ceiling_fired = {}
 
 
 def _query_risk_range(c, inst_id, date_from, date_to):
@@ -883,7 +884,7 @@ def poller_thread():
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
             try:
-                c.execute("SELECT id, name, path, symbol_suffix, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_profit_ceiling_usd, account_type, alert_profit_lock_pct, alert_drawdown_levels FROM instances")
+                c.execute("SELECT id, name, path, symbol_suffix, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_profit_ceiling_usd, account_type, alert_profit_lock_pct, alert_drawdown_levels, trade_locked FROM instances")
             except sqlite3.OperationalError:
                 try:
                     c.execute("SELECT id, name, path, symbol_suffix, group_name FROM instances")
@@ -1056,29 +1057,38 @@ def poller_thread():
                                     state["status"] = "IDLE"
 
                     # --- Profit ceiling: close outright once total equity (realized + unrealized)
-                    # reaches a fixed $ level, no arm/confirm step. Unlike the %-based profit-lock
-                    # above, this is meant to fire every time equity runs back up to the ceiling
-                    # (e.g. after a drawdown and recovery), so the fired-flag resets once equity
-                    # dips back below it rather than staying latched forever.
+                    # reaches a fixed $ level, no arm/confirm step, then LOCK the instance so it
+                    # can't open further trades. The copier worker refuses new copied trades on a
+                    # locked instance (see copier_manager_thread/mt5_worker.py); the kill-switch
+                    # below catches anything opened another way (manual, an EA) by closing it again.
+                    # Stays locked until POST /api/instances/<id>/unlock.
                     ceiling = r.get("alert_profit_ceiling_usd", 0.0)
-                    if ceiling > 0:
-                        equity = r.get("equity", 0.0)
-                        if equity >= ceiling:
-                            if not profit_ceiling_fired.get(inst_id, False):
-                                if auto_close_enabled:
-                                    close_res = close_instance_positions((inst_id, inst_name, inst_path_by_id.get(inst_id)))
-                                    send_telegram_message(
-                                        f"✅ {inst_name} equity hit ${equity:.2f} (ceiling ${ceiling:.2f}) — "
-                                        f"closed {close_res.get('closed', 0)} position(s) to lock in profit."
-                                    )
-                                else:
-                                    send_telegram_message(
-                                        f"⚠️ {inst_name} equity hit ${equity:.2f} (ceiling ${ceiling:.2f}), but auto-close is "
-                                        f"currently disabled. Please close manually."
-                                    )
-                                profit_ceiling_fired[inst_id] = True
+                    trade_locked = r.get("trade_locked", False)
+                    equity = r.get("equity", 0.0)
+
+                    if trade_locked:
+                        if current_tickets:
+                            close_res = close_instance_positions((inst_id, inst_name, inst_path_by_id.get(inst_id)))
+                            if close_res.get("closed", 0) > 0:
+                                send_telegram_message(
+                                    f"🔒 {inst_name} is locked (profit ceiling reached) but had "
+                                    f"{close_res.get('closed', 0)} new position(s) open — closed them again. "
+                                    f"Unlock the instance from the Copier page to allow trading."
+                                )
+                    elif ceiling > 0 and equity >= ceiling:
+                        if auto_close_enabled:
+                            close_res = close_instance_positions((inst_id, inst_name, inst_path_by_id.get(inst_id)))
+                            c.execute("UPDATE instances SET trade_locked = 1 WHERE id = ?", (inst_id,))
+                            send_telegram_message(
+                                f"🔒 {inst_name} equity hit ${equity:.2f} (ceiling ${ceiling:.2f}) — closed "
+                                f"{close_res.get('closed', 0)} position(s) and LOCKED the instance from further "
+                                f"trading. Unlock it from the Copier page when you're ready."
+                            )
                         else:
-                            profit_ceiling_fired[inst_id] = False
+                            send_telegram_message(
+                                f"⚠️ {inst_name} equity hit ${equity:.2f} (ceiling ${ceiling:.2f}), but auto-close "
+                                f"is currently disabled so it wasn't closed or locked. Please close manually."
+                            )
 
                 for inst in instances:
                     inst_id = inst[0]
@@ -1222,7 +1232,7 @@ def api_instances():
     
     if request.method == 'GET':
         try:
-            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_profit_ceiling_usd, account_type, alert_profit_lock_pct, alert_drawdown_levels, news_block_before_min, news_block_after_min FROM instances ORDER BY id ASC")
+            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_profit_ceiling_usd, account_type, alert_profit_lock_pct, alert_drawdown_levels, news_block_before_min, news_block_after_min, trade_locked FROM instances ORDER BY id ASC")
         except sqlite3.OperationalError:
             try:
                 c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name FROM instances ORDER BY id ASC")
@@ -1271,7 +1281,8 @@ def api_instances():
                 "alert_profit_lock_pct": r[18] if len(r) > 18 else 0.0,
                 "alert_drawdown_levels": r[19] if len(r) > 19 and r[19] else '2,4,6,8,10',
                 "news_block_before_min": r[20] if len(r) > 20 and r[20] is not None else 2.0,
-                "news_block_after_min": r[21] if len(r) > 21 and r[21] is not None else 2.0
+                "news_block_after_min": r[21] if len(r) > 21 and r[21] is not None else 2.0,
+                "trade_locked": bool(r[22]) if len(r) > 22 and r[22] else False
             })
         conn.close()
         return jsonify(instances)
@@ -1483,6 +1494,27 @@ def api_instances_reset_profit():
     finally:
         conn.close()
         
+    return jsonify({"status": "success"})
+
+@flask_app.route('/api/instances/unlock', methods=['POST'])
+def api_instances_unlock():
+    """Clears trade_locked, set by the profit-ceiling auto-close (see poller_thread) once it
+    books profit on an instance. Manual-only -- there's no automatic reset."""
+    data = request.json
+    instance_id = data.get('id')
+    if not instance_id:
+        return jsonify({"error": "ID required"}), 400
+
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    try:
+        c.execute("UPDATE instances SET trade_locked=0 WHERE id=?", (instance_id,))
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        conn.close()
+
     return jsonify({"status": "success"})
 
 @flask_app.route('/api/browse_file', methods=['GET'])
@@ -2382,7 +2414,7 @@ def copier_manager_thread():
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
             try:
-                c.execute("SELECT id, path, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, symbol_mapping, account_type, news_block_before_min, news_block_after_min FROM instances WHERE copier_role IN ('PROVIDER', 'CONSUMER')")
+                c.execute("SELECT id, path, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, symbol_mapping, account_type, news_block_before_min, news_block_after_min, trade_locked FROM instances WHERE copier_role IN ('PROVIDER', 'CONSUMER')")
                 active_copiers = c.fetchall()
             except sqlite3.OperationalError:
                 active_copiers = []
@@ -2416,6 +2448,7 @@ def copier_manager_thread():
                         '--account_type', str(r[8] if len(r) > 8 and r[8] else 'PERSONAL'),
                         '--news_before_min', str(r[9] if len(r) > 9 and r[9] is not None else 2.0),
                         '--news_after_min', str(r[10] if len(r) > 10 and r[10] is not None else 2.0),
+                        '--trade_locked', str(int(r[11]) if len(r) > 11 and r[11] else 0),
                     ]
                     p = subprocess.Popen(cmd)
                     copier_workers[cid] = {'process': p, 'config': r}

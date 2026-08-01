@@ -285,7 +285,12 @@ def consumer_loop(sub_socket, args):
             msg = sub_socket.recv_json()
             if msg.get("type") == "NEW_TRADE":
                 print(f"[CONSUMER] Received Signal: {msg}")
-                
+
+                if args.trade_locked:
+                    print(f"[CONSUMER] BLOCKED NEW_TRADE {msg.get('symbol')}: instance is trade-locked (profit ceiling reached)")
+                    notify_ui(f"🔒 BLOCKED (Trade Locked): NEW {msg.get('action')} {msg.get('symbol')} — instance is locked from trading.")
+                    continue
+
                 symbol = msg["symbol"]
                 
                 # Apply symbol mapping
@@ -402,6 +407,7 @@ if __name__ == "__main__":
     parser.add_argument("--account_type", type=str, default="PERSONAL", choices=["PERSONAL", "PROPFIRM"])
     parser.add_argument("--news_before_min", type=float, default=2.0)
     parser.add_argument("--news_after_min", type=float, default=2.0)
+    parser.add_argument("--trade_locked", type=int, default=0)
 
     args = parser.parse_args()
     
