@@ -136,7 +136,7 @@ const Copier = () => {
         path: updatedInst.path !== undefined ? updatedInst.path : original.path,
         symbol_mapping: updatedInst.symbol_mapping !== undefined ? updatedInst.symbol_mapping : (original.symbol_mapping || '{}'),
         alert_drawdown_levels: updatedInst.alert_drawdown_levels !== undefined ? updatedInst.alert_drawdown_levels : (original.alert_drawdown_levels || '2,4,6,8,10'),
-        alert_daily_profit_target: updatedInst.alert_daily_profit_target !== undefined ? updatedInst.alert_daily_profit_target : (original.alert_daily_profit_target || 0),
+        alert_profit_ceiling_usd: updatedInst.alert_profit_ceiling_usd !== undefined ? updatedInst.alert_profit_ceiling_usd : (original.alert_profit_ceiling_usd || 0),
         alert_profit_lock_pct: updatedInst.alert_profit_lock_pct !== undefined ? updatedInst.alert_profit_lock_pct : (original.alert_profit_lock_pct || 0),
         account_type: updatedInst.account_type !== undefined ? updatedInst.account_type : (original.account_type || 'PERSONAL'),
         news_block_before_min: updatedInst.news_block_before_min !== undefined ? updatedInst.news_block_before_min : (original.news_block_before_min ?? 2.0),
@@ -217,7 +217,7 @@ const Copier = () => {
       copier_role: 'NONE',
       symbol_mapping: '{}',
       alert_drawdown_levels: '2,4,6,8,10',
-      alert_daily_profit_target: 0,
+      alert_profit_ceiling_usd: 0,
       alert_profit_lock_pct: 0,
       account_type: 'PERSONAL',
       news_block_before_min: 2.0,
@@ -244,7 +244,7 @@ const Copier = () => {
           path: editingInstance.path,
           symbol_mapping: editingInstance.symbol_mapping || '{}',
           alert_drawdown_levels: editingInstance.alert_drawdown_levels || '2,4,6,8,10',
-          alert_daily_profit_target: editingInstance.alert_daily_profit_target || 0,
+          alert_profit_ceiling_usd: editingInstance.alert_profit_ceiling_usd || 0,
           alert_profit_lock_pct: editingInstance.alert_profit_lock_pct || 0,
           account_type: editingInstance.account_type || 'PERSONAL',
           news_block_before_min: editingInstance.news_block_before_min ?? 2.0,
@@ -262,7 +262,7 @@ const Copier = () => {
           name: editingInstance.name,
           path: editingInstance.path,
           alert_drawdown_levels: editingInstance.alert_drawdown_levels,
-          alert_daily_profit_target: editingInstance.alert_daily_profit_target,
+          alert_profit_ceiling_usd: editingInstance.alert_profit_ceiling_usd,
           alert_profit_lock_pct: editingInstance.alert_profit_lock_pct,
           account_type: editingInstance.account_type,
           news_block_before_min: editingInstance.news_block_before_min,
@@ -613,6 +613,16 @@ const Copier = () => {
                   step="0.1"
                   value={editingInstance.alert_profit_lock_pct ?? 0}
                   onChange={(e) => setEditingInstance((prev) => (prev ? { ...prev, alert_profit_lock_pct: parseFloat(e.target.value) } : null))}
+                  placeholder="0 = Disabled"
+                />
+              </Field>
+              <Field label="Profit Ceiling (Equity $)" hint="Close all positions once equity reaches this. 0 = disabled">
+                <TermInput
+                  type="number"
+                  step="1"
+                  min="0"
+                  value={editingInstance.alert_profit_ceiling_usd ?? 0}
+                  onChange={(e) => setEditingInstance((prev) => (prev ? { ...prev, alert_profit_ceiling_usd: parseFloat(e.target.value) } : null))}
                   placeholder="0 = Disabled"
                 />
               </Field>

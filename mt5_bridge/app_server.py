@@ -267,9 +267,16 @@ def init_db():
     try:
         c.execute("ALTER TABLE instances ADD COLUMN alert_drawdown_limit REAL DEFAULT 2.0")
     except sqlite3.OperationalError: pass
+    # alert_profit_ceiling_usd replaces the old alert_daily_profit_target column, which was read
+    # every poll but never actually evaluated anywhere -- RENAME keeps it in the same tuple
+    # position on existing DBs (the positional SELECT tuples below depend on that), ADD COLUMN
+    # covers fresh DBs where the old column never existed.
     try:
-        c.execute("ALTER TABLE instances ADD COLUMN alert_daily_profit_target REAL DEFAULT 0.0")
-    except sqlite3.OperationalError: pass
+        c.execute("ALTER TABLE instances RENAME COLUMN alert_daily_profit_target TO alert_profit_ceiling_usd")
+    except sqlite3.OperationalError:
+        try:
+            c.execute("ALTER TABLE instances ADD COLUMN alert_profit_ceiling_usd REAL DEFAULT 0.0")
+        except sqlite3.OperationalError: pass
     try:
         c.execute("ALTER TABLE instances ADD COLUMN account_type TEXT DEFAULT 'PERSONAL'")
     except sqlite3.OperationalError: pass
@@ -322,7 +329,17 @@ def init_db():
     try:
         c.execute("ALTER TABLE trading_log ADD COLUMN local_time INTEGER")
     except Exception: pass
-    
+
+    # sl_at_open/entry_risk_usd let weekly/daily reports derive "trades without SL"
+    # and "max risk exposed" from complete broker history instead of live polling
+    # snapshots, which silently miss any trade that isn't caught mid-open by a poll.
+    try:
+        c.execute("ALTER TABLE trading_log ADD COLUMN sl_at_open REAL DEFAULT 0")
+    except Exception: pass
+    try:
+        c.execute("ALTER TABLE trading_log ADD COLUMN entry_risk_usd REAL DEFAULT 0")
+    except Exception: pass
+
     # Add columns for Story Notes if they don't exist
     
     c.execute('''
@@ -533,7 +550,7 @@ def fetch_instance_data(inst):
     copier_risk_usd = inst[8] if len(inst) > 8 else 100.0
     copier_risk_multiplier = inst[9] if len(inst) > 9 else 1.0
     alert_drawdown_limit = inst[10] if len(inst) > 10 else 2.0
-    alert_daily_profit_target = inst[11] if len(inst) > 11 else 0.0
+    alert_profit_ceiling_usd = inst[11] if len(inst) > 11 else 0.0
     account_type = inst[12] if len(inst) > 12 else 'PERSONAL'
     alert_profit_lock_pct = inst[13] if len(inst) > 13 else 0.0
     alert_drawdown_levels = inst[14] if len(inst) > 14 else '2,4,6,8,10'
@@ -561,7 +578,7 @@ def fetch_instance_data(inst):
                 "copier_risk_usd": copier_risk_usd,
                 "copier_risk_multiplier": copier_risk_multiplier,
                 "alert_drawdown_limit": alert_drawdown_limit,
-                "alert_daily_profit_target": alert_daily_profit_target,
+                "alert_profit_ceiling_usd": alert_profit_ceiling_usd,
                 "account_type": account_type,
                 "alert_profit_lock_pct": alert_profit_lock_pct,
                 "alert_drawdown_levels": alert_drawdown_levels,
@@ -669,6 +686,13 @@ last_summary_date = ""
 profit_lock_state = {}
 profit_lock_lock = threading.Lock()
 
+# Profit-ceiling auto-close: inst_id -> bool, True once we've closed for hitting the ceiling on
+# this "leg" (equity >= alert_profit_ceiling_usd). Resets to False once equity drops back below the
+# ceiling, so a later run-up to the same ceiling triggers again -- this is meant to sweep profit
+# above a fixed equity level repeatedly, not just once. In-memory only, same reasoning as
+# profit_lock_state above.
+profit_ceiling_fired = {}
+
 
 def _query_risk_range(c, inst_id, date_from, date_to):
     c.execute(
@@ -683,12 +707,19 @@ def _query_risk_range(c, inst_id, date_from, date_to):
     }
 
 
-def _query_trade_stats(c, inst_id, ts_from, ts_to):
+def _query_trade_stats(c, inst_id, ts_from, ts_to, current_balance=None):
+    """current_balance (optional): the instance's live balance *right now*, used to anchor a
+    realized high-water-mark drawdown reconstructed from closed trades. This -- along with
+    no_sl_count/max_entry_risk_usd below -- is sourced entirely from trading_log (complete
+    broker history, refreshed by sync_trading_log() regardless of app uptime), unlike the
+    risk_snapshots-based figures in _query_risk_range which only reflect what the live poller
+    happened to sample."""
     c.execute(
-        "SELECT profit FROM trading_log WHERE instance_id = ? AND COALESCE(local_time, time) >= ? AND COALESCE(local_time, time) < ? ORDER BY COALESCE(local_time, time) ASC",
+        "SELECT profit, sl_at_open, entry_risk_usd FROM trading_log WHERE instance_id = ? AND COALESCE(local_time, time) >= ? AND COALESCE(local_time, time) < ? ORDER BY COALESCE(local_time, time) ASC",
         (inst_id, ts_from, ts_to)
     )
-    profits = [row[0] for row in c.fetchall() if row[0] is not None]
+    rows = c.fetchall()
+    profits = [row[0] for row in rows if row[0] is not None]
     total = len(profits)
     wins = sum(1 for p in profits if p > 0)
     win_rate = (wins / total * 100.0) if total else None
@@ -712,11 +743,36 @@ def _query_trade_stats(c, inst_id, ts_from, ts_to):
         else:
             cur_streak = 0
 
+    no_sl_count = sum(1 for row in rows if row[0] is not None and not row[1])
+    max_entry_risk_usd = max((row[2] or 0.0 for row in rows), default=0.0)
+
+    # Realized equity high-water-mark drawdown: walk the period's closed-trade P&L in order,
+    # anchored so the running balance ends at current_balance at ts_to. This is the balance-based
+    # analogue of "peak drawdown" and is available even if the poller never sampled a single
+    # floating-loss moment -- it only needs closed trades, which trading_log always has.
+    realized_dd_pct = 0.0
+    if current_balance is not None and profits:
+        c.execute(
+            "SELECT COALESCE(SUM(profit), 0) FROM trading_log WHERE instance_id = ? AND COALESCE(local_time, time) >= ?",
+            (inst_id, ts_to)
+        )
+        profit_after_period = c.fetchone()[0] or 0.0
+        balance_at_period_start = current_balance - profit_after_period - total_realized
+        running = balance_at_period_start
+        peak = running
+        for p in profits:
+            running += p
+            peak = max(peak, running)
+            if peak > 0:
+                realized_dd_pct = max(realized_dd_pct, (peak - running) / peak * 100)
+
     return {
         "total_trades": total, "win_rate": win_rate, "largest_loss": largest_loss,
         "max_loss_streak": max_streak, "total_realized": total_realized,
         "best_trade": best_trade, "profit_factor": profit_factor,
         "gross_profit": gross_profit, "gross_loss": gross_loss,
+        "no_sl_count": no_sl_count, "max_entry_risk_usd": max_entry_risk_usd,
+        "realized_dd_pct": realized_dd_pct,
     }
 
 
@@ -782,21 +838,38 @@ def build_risk_report(period, risk_payload, c, date_from, date_to, ts_from=None,
         dd_limit = dd_levels[0] if dd_levels else 0
 
         risk = _query_risk_range(c, inst_id, date_from, date_to)
-        breach_flag = " ⚠️ breached limit" if dd_limit > 0 and risk["peak_drawdown_pct"] >= dd_limit else ""
+
+        # risk_snapshots (risk, above) only reflects moments the live poller actually sampled an
+        # open position -- it silently under-reports (often to zero) if the app wasn't running, or
+        # a trade opened and closed between polls. stats, below, is reconstructed from complete
+        # broker deal/order history via trading_log, so it can't miss a closed trade. We take the
+        # max of the two for drawdown/risk-exposed (either source can see something the other
+        # can't -- e.g. a floating spike that recovered before close is poller-only) and prefer the
+        # historical count outright for no-SL trades, since it's a strict superset of what polling
+        # can ever catch.
+        peak_dd = risk["peak_drawdown_pct"]
+        max_risk = risk["max_risk_usd"]
+        no_sl = risk["no_sl_count"]
+        stats = None
+        if ts_from is not None:
+            stats = _query_trade_stats(c, inst_id, ts_from, ts_to, current_balance=r.get("balance"))
+            peak_dd = max(peak_dd, stats["realized_dd_pct"])
+            max_risk = max(max_risk, stats["max_entry_risk_usd"])
+            no_sl = stats["no_sl_count"]
+
+        breach_flag = " ⚠️ breached limit" if dd_limit > 0 and peak_dd >= dd_limit else ""
 
         lines.append(f"\n{inst_name}")
-        lines.append(f"  Peak drawdown: {risk['peak_drawdown_pct']:.2f}% (limit {dd_limit:.1f}%){breach_flag}")
-        lines.append(f"  Max risk exposed: ${risk['max_risk_usd']:.2f}")
-        lines.append(f"  Trades without SL: {risk['no_sl_count']}")
+        lines.append(f"  Peak drawdown: {peak_dd:.2f}% (limit {dd_limit:.1f}%){breach_flag}")
+        lines.append(f"  Max risk exposed: ${max_risk:.2f}")
+        lines.append(f"  Trades without SL: {no_sl}")
 
-        if period in ("weekly", "monthly") and ts_from is not None:
-            stats = _query_trade_stats(c, inst_id, ts_from, ts_to)
-            if stats["total_trades"] > 0:
-                wr = f"{stats['win_rate']:.0f}%" if stats["win_rate"] is not None else "n/a"
-                lines.append(f"  Win rate: {wr} ({stats['total_trades']} trades)")
-                lines.append(f"  Largest single loss: ${stats['largest_loss']:.2f}")
-                lines.append(f"  Max consecutive losses: {stats['max_loss_streak']}")
-                lines.append(f"  Realized (context only): ${stats['total_realized']:.2f}")
+        if period in ("weekly", "monthly") and stats is not None and stats["total_trades"] > 0:
+            wr = f"{stats['win_rate']:.0f}%" if stats["win_rate"] is not None else "n/a"
+            lines.append(f"  Win rate: {wr} ({stats['total_trades']} trades)")
+            lines.append(f"  Largest single loss: ${stats['largest_loss']:.2f}")
+            lines.append(f"  Max consecutive losses: {stats['max_loss_streak']}")
+            lines.append(f"  Realized (context only): ${stats['total_realized']:.2f}")
 
     return "\n".join(lines)
 
@@ -810,7 +883,7 @@ def poller_thread():
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
             try:
-                c.execute("SELECT id, name, path, symbol_suffix, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels FROM instances")
+                c.execute("SELECT id, name, path, symbol_suffix, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_profit_ceiling_usd, account_type, alert_profit_lock_pct, alert_drawdown_levels FROM instances")
             except sqlite3.OperationalError:
                 try:
                     c.execute("SELECT id, name, path, symbol_suffix, group_name FROM instances")
@@ -982,6 +1055,30 @@ def poller_thread():
                                 if unrealized_pct < pre_alert_level:
                                     state["status"] = "IDLE"
 
+                    # --- Profit ceiling: close outright once total equity (realized + unrealized)
+                    # reaches a fixed $ level, no arm/confirm step. Unlike the %-based profit-lock
+                    # above, this is meant to fire every time equity runs back up to the ceiling
+                    # (e.g. after a drawdown and recovery), so the fired-flag resets once equity
+                    # dips back below it rather than staying latched forever.
+                    ceiling = r.get("alert_profit_ceiling_usd", 0.0)
+                    if ceiling > 0:
+                        equity = r.get("equity", 0.0)
+                        if equity >= ceiling:
+                            if not profit_ceiling_fired.get(inst_id, False):
+                                if auto_close_enabled:
+                                    close_res = close_instance_positions((inst_id, inst_name, inst_path_by_id.get(inst_id)))
+                                    send_telegram_message(
+                                        f"✅ {inst_name} equity hit ${equity:.2f} (ceiling ${ceiling:.2f}) — "
+                                        f"closed {close_res.get('closed', 0)} position(s) to lock in profit."
+                                    )
+                                else:
+                                    send_telegram_message(
+                                        f"⚠️ {inst_name} equity hit ${equity:.2f} (ceiling ${ceiling:.2f}), but auto-close is "
+                                        f"currently disabled. Please close manually."
+                                    )
+                                profit_ceiling_fired[inst_id] = True
+                        else:
+                            profit_ceiling_fired[inst_id] = False
 
                 for inst in instances:
                     inst_id = inst[0]
@@ -997,7 +1094,9 @@ def poller_thread():
                         
                 if last_summary_date and last_summary_date != current_date_str:
                     yesterday_date_str = last_summary_date
-                    daily_report = build_risk_report("daily", risk_payload, c, yesterday_date_str, yesterday_date_str)
+                    yesterday_ts_from = int(datetime.strptime(yesterday_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+                    yesterday_ts_to = yesterday_ts_from + 86400
+                    daily_report = build_risk_report("daily", risk_payload, c, yesterday_date_str, yesterday_date_str, yesterday_ts_from, yesterday_ts_to)
                     send_telegram_message(daily_report)
 
                     if datetime.utcnow().weekday() == 5:
@@ -1123,7 +1222,7 @@ def api_instances():
     
     if request.method == 'GET':
         try:
-            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels, news_block_before_min, news_block_after_min FROM instances ORDER BY id ASC")
+            c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, alert_drawdown_limit, alert_profit_ceiling_usd, account_type, alert_profit_lock_pct, alert_drawdown_levels, news_block_before_min, news_block_after_min FROM instances ORDER BY id ASC")
         except sqlite3.OperationalError:
             try:
                 c.execute("SELECT id, name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name FROM instances ORDER BY id ASC")
@@ -1167,7 +1266,7 @@ def api_instances():
                 "copier_risk_usd": copier_risk_usd,
                 "copier_risk_multiplier": copier_risk_multiplier,
                 "alert_drawdown_limit": r[15] if len(r) > 15 else 2.0,
-                "alert_daily_profit_target": r[16] if len(r) > 16 else 0.0,
+                "alert_profit_ceiling_usd": r[16] if len(r) > 16 else 0.0,
                 "account_type": r[17] if len(r) > 17 else 'PERSONAL',
                 "alert_profit_lock_pct": r[18] if len(r) > 18 else 0.0,
                 "alert_drawdown_levels": r[19] if len(r) > 19 and r[19] else '2,4,6,8,10',
@@ -1188,7 +1287,7 @@ def api_instances():
         profit_limit = float(data.get('profit_limit', 0))
         group_name = data.get('group_name', 'Ungrouped')
         alert_drawdown_limit = float(data.get('alert_drawdown_limit', 2.0))
-        alert_daily_profit_target = float(data.get('alert_daily_profit_target', 0.0))
+        alert_profit_ceiling_usd = float(data.get('alert_profit_ceiling_usd', 0.0))
         account_type = data.get('account_type', 'PERSONAL')
         alert_profit_lock_pct = float(data.get('alert_profit_lock_pct', 0.0))
         alert_drawdown_levels = _format_drawdown_levels(_parse_drawdown_levels(data.get('alert_drawdown_levels', '2,4,6,8,10'))) or '2,4,6,8,10'
@@ -1202,7 +1301,7 @@ def api_instances():
             return jsonify({"error": "Name and path required"}), 400
 
         try:
-            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels, news_block_before_min, news_block_after_min) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels, news_block_before_min, news_block_after_min))
+            c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_profit_ceiling_usd, account_type, alert_profit_lock_pct, alert_drawdown_levels, news_block_before_min, news_block_after_min) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time, group_name, alert_drawdown_limit, alert_profit_ceiling_usd, account_type, alert_profit_lock_pct, alert_drawdown_levels, news_block_before_min, news_block_after_min))
         except sqlite3.OperationalError:
             try:
                 c.execute("INSERT INTO instances (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, profit_limit_start_time))
@@ -1226,7 +1325,7 @@ def api_instances():
         profit_limit = float(data.get('profit_limit', 0))
         group_name = data.get('group_name', 'Ungrouped')
         alert_drawdown_limit = float(data.get('alert_drawdown_limit', 2.0))
-        alert_daily_profit_target = float(data.get('alert_daily_profit_target', 0.0))
+        alert_profit_ceiling_usd = float(data.get('alert_profit_ceiling_usd', 0.0))
         account_type = data.get('account_type', 'PERSONAL')
         alert_profit_lock_pct = float(data.get('alert_profit_lock_pct', 0.0))
         alert_drawdown_levels = _format_drawdown_levels(_parse_drawdown_levels(data.get('alert_drawdown_levels', '2,4,6,8,10'))) or '2,4,6,8,10'
@@ -1238,7 +1337,7 @@ def api_instances():
             return jsonify({"error": "ID, name and path required"}), 400
 
         try:
-            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=?, group_name=?, alert_drawdown_limit=?, alert_daily_profit_target=?, account_type=?, alert_profit_lock_pct=?, alert_drawdown_levels=?, news_block_before_min=?, news_block_after_min=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, group_name, alert_drawdown_limit, alert_daily_profit_target, account_type, alert_profit_lock_pct, alert_drawdown_levels, news_block_before_min, news_block_after_min, instance_id))
+            c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=?, group_name=?, alert_drawdown_limit=?, alert_profit_ceiling_usd=?, account_type=?, alert_profit_lock_pct=?, alert_drawdown_levels=?, news_block_before_min=?, news_block_after_min=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, group_name, alert_drawdown_limit, alert_profit_ceiling_usd, account_type, alert_profit_lock_pct, alert_drawdown_levels, news_block_before_min, news_block_after_min, instance_id))
         except sqlite3.OperationalError:
             try:
                 c.execute("UPDATE instances SET name=?, path=?, risk_usd=?, symbol_mapping=?, auto_trade=?, accepted_timeframe=?, profit_limit=? WHERE id=?", (name, path, risk_usd, symbol_mapping, auto_trade, accepted_timeframe, profit_limit, instance_id))
@@ -1777,16 +1876,41 @@ def sync_trading_log():
                     net_profit = deal.profit + deal.commission + deal.swap
                     logging.info(f"Deal {deal.ticket} (no pos deals): Profit={deal.profit}, Comm={deal.commission}, Swap={deal.swap}, Net={net_profit}")
                     local_start_time = deal.time + time_offset
-                
+
                 local_close_time = deal.time + time_offset
-                
+
+                # Recover the SL the position was opened with (and the $ risk it implied) from the
+                # entry order's history, not live polling -- the live poller only catches this if it
+                # happens to sample the position while it's open, so it silently misses fast trades
+                # or any stretch where the app wasn't running. Order history persists regardless.
+                entry_deal = next((d for d in (pos_deals or []) if d.entry == 0), None)
+                sl_at_open = 0.0
+                entry_risk_usd = 0.0
+                if entry_deal is not None:
+                    try:
+                        entry_orders = mt5.history_orders_get(ticket=entry_deal.order)
+                    except Exception:
+                        entry_orders = None
+                    if entry_orders:
+                        sl_at_open = entry_orders[0].sl or 0.0
+                    if sl_at_open:
+                        order_type = mt5.ORDER_TYPE_BUY if entry_deal.type == mt5.DEAL_TYPE_BUY else mt5.ORDER_TYPE_SELL
+                        calc = mt5.order_calc_profit(order_type, entry_deal.symbol, entry_deal.volume, entry_deal.price, sl_at_open)
+                        if calc is not None:
+                            entry_risk_usd = abs(calc)
+                        else:
+                            sym_info = mt5.symbol_info(entry_deal.symbol)
+                            if sym_info and sym_info.trade_tick_size and sym_info.trade_tick_value:
+                                ticks_lost = abs(entry_deal.price - sl_at_open) / sym_info.trade_tick_size
+                                entry_risk_usd = ticks_lost * sym_info.trade_tick_value * entry_deal.volume
+
                 try:
                     c.execute('''
                         INSERT INTO trading_log (
-                            instance_id, ticket, symbol, type, volume, profit, time, magic, comment, commission, swap, raw_profit, local_start_time, local_time
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            instance_id, ticket, symbol, type, volume, profit, time, magic, comment, commission, swap, raw_profit, local_start_time, local_time, sl_at_open, entry_risk_usd
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
-                        inst_id, deal.ticket, deal.symbol, deal.type, deal.volume, net_profit, deal.time, deal.magic, deal.comment, total_comm, total_swap, total_profit, local_start_time, local_close_time
+                        inst_id, deal.ticket, deal.symbol, deal.type, deal.volume, net_profit, deal.time, deal.magic, deal.comment, total_comm, total_swap, total_profit, local_start_time, local_close_time, sl_at_open, entry_risk_usd
                     ))
                     total_synced += 1
                 except Exception as e:
