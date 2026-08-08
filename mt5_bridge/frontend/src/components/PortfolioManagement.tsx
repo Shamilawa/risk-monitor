@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
   Chart as ChartJS,
@@ -132,6 +133,7 @@ function drawdownTone(pct: number): Tone {
 function PortfolioCard({ item }: { item: PortfolioOverviewItem }) {
   const instances = useStore((s) => s.instances || []);
   const live = instances.find((i) => i.id === item.id);
+  const navigate = useNavigate();
 
   const curve = useMemo(() => buildEquityCurve(item, live?.equity), [item, live?.equity]);
   const { risk } = item;
@@ -143,6 +145,21 @@ function PortfolioCard({ item }: { item: PortfolioOverviewItem }) {
   else if (item.copier_role === 'CONSUMER') roleBadge = <StatusTag label="SUB" tone="accent" />;
 
   return (
+    <div
+      onClick={() => navigate(`/portfolio/${item.id}`)}
+      role="link"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          navigate(`/portfolio/${item.id}`);
+        }
+      }}
+      title={`Open trading journal for ${item.name}`}
+      style={{ cursor: 'pointer', minWidth: 0, outline: 'none' }}
+      onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.18)')}
+      onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+    >
     <Panel
       style={{ minWidth: 0 }}
       title={
@@ -156,13 +173,14 @@ function PortfolioCard({ item }: { item: PortfolioOverviewItem }) {
         </div>
       }
       actions={
-        live && (
-          <span style={{ textAlign: 'right', fontSize: '10px', color: 'var(--text-muted)' }}>
-            <div>
+        <span style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '10px', color: 'var(--text-muted)' }}>
+          {live && (
+            <span>
               EQ <strong style={{ color: 'var(--text-main)' }}>${usd(live.equity || 0)}</strong>
-            </div>
-          </span>
-        )
+            </span>
+          )}
+          <StatusTag label="JOURNAL ›" tone="accent" />
+        </span>
       }
       bodyStyle={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}
     >
@@ -226,6 +244,7 @@ function PortfolioCard({ item }: { item: PortfolioOverviewItem }) {
         )}
       </div>
     </Panel>
+    </div>
   );
 }
 

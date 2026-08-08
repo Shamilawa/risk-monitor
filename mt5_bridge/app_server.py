@@ -1,6 +1,7 @@
 import threading
 import queue
 import logging
+import math
 import subprocess
 import urllib.request
 import json
@@ -62,8 +63,18 @@ from flask import send_from_directory
 basedir = os.path.abspath(os.path.dirname(__file__))
 frontend_dist = os.path.join(basedir, 'frontend', 'dist')
 
-# Specify static and template folders to point to the Vite build
-flask_app = Flask(__name__, static_folder=frontend_dist, static_url_path='/', template_folder=frontend_dist)
+# Static is scoped to the hashed Vite bundles under dist/assets, NOT to dist itself. With
+# static_url_path='/' Flask registers a '/<path:filename>' rule that outranks serve_react's
+# catch-all, so any client-side route (/portfolio, /portfolio/1, /copier) 404s the moment
+# it is loaded directly or refreshed -- only in-app navigation hid it. Everything outside
+# /assets now falls through to serve_react, which serves real files if they exist and
+# index.html otherwise, which is what SPA routing needs.
+flask_app = Flask(
+    __name__,
+    static_folder=os.path.join(frontend_dist, 'assets'),
+    static_url_path='/assets',
+    template_folder=frontend_dist,
+)
 flask_app.config['TEMPLATES_AUTO_RELOAD'] = True
 flask_app.config['SECRET_KEY'] = 'secret!'
 socketio = SocketIO(flask_app, cors_allowed_origins="*", async_mode='threading')
@@ -346,8 +357,79 @@ def init_db():
         c.execute("ALTER TABLE trading_log ADD COLUMN entry_risk_usd REAL DEFAULT 0")
     except Exception: pass
 
+    # --- Journal columns -------------------------------------------------------------
+    # position_id is the journal's real identity for a trade. A scale-out closes in several
+    # OUT deals; the old sync inserted one row per OUT deal and gave each row the *whole*
+    # position's summed P&L, multiplying that trade's profit by its number of partial exits.
+    # One row per position, keyed on position_id, is what fixes it -- see sync_trading_log().
+    # direction comes from the ENTRY deal: the closing deal's `type` is inverted relative to
+    # the position (a long closes with a SELL deal), so `type` alone can't be read directly.
+    for ddl in (
+        "ALTER TABLE trading_log ADD COLUMN position_id INTEGER",
+        "ALTER TABLE trading_log ADD COLUMN direction INTEGER",       # 0 = LONG, 1 = SHORT
+        "ALTER TABLE trading_log ADD COLUMN entry_price REAL DEFAULT 0",
+        "ALTER TABLE trading_log ADD COLUMN exit_price REAL DEFAULT 0",
+        "ALTER TABLE trading_log ADD COLUMN tp_at_open REAL DEFAULT 0",
+        # MAE/MFE are the worst and best floating P&L the position ever showed, in account
+        # currency. NULL means "not backfilled yet" and must stay distinguishable from 0.0,
+        # which is a legitimate value for a trade that never went against you.
+        "ALTER TABLE trading_log ADD COLUMN mae_usd REAL",
+        "ALTER TABLE trading_log ADD COLUMN mfe_usd REAL",
+    ):
+        try:
+            c.execute(ddl)
+        except sqlite3.OperationalError: pass
+
+    c.execute("CREATE INDEX IF NOT EXISTS idx_trading_log_position ON trading_log (instance_id, position_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_trading_log_close ON trading_log (instance_id, local_time)")
+
+    # Journal annotations live in their own table keyed on (instance_id, position_id) because
+    # sync_trading_log() may delete and rebuild trading_log rows at any time -- trading_log.id
+    # is not stable across a resync, so nothing user-authored may ever be keyed to it.
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS trade_annotations (
+            instance_id INTEGER,
+            position_id INTEGER,
+            tags        TEXT DEFAULT '',
+            grade       TEXT DEFAULT '',
+            note        TEXT DEFAULT '',
+            updated_at  INTEGER,
+            PRIMARY KEY (instance_id, position_id)
+        )
+    ''')
+
+    # Deposits, withdrawals, credits and corrections -- every balance change that is NOT a
+    # trade. Without these a $5,000 deposit looks like a 40% daily return and every
+    # risk-adjusted ratio built on top of it is garbage, so they are captured and then
+    # subtracted out of the return series.
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS balance_operations (
+            instance_id INTEGER,
+            ticket      INTEGER,
+            time        INTEGER,
+            local_time  INTEGER,
+            deal_type   INTEGER,
+            amount      REAL,
+            comment     TEXT,
+            PRIMARY KEY (instance_id, ticket)
+        )
+    ''')
+    c.execute("CREATE INDEX IF NOT EXISTS idx_balance_ops_time ON balance_operations (instance_id, local_time)")
+
+    # Per-instance incremental-sync bookmark. schema_version forces exactly one full rebuild
+    # when an existing DB first runs the position-aggregated sync, so pre-existing rows (which
+    # have no position_id and may be multi-counted) are replaced rather than merged into.
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS trading_log_sync_state (
+            instance_id     INTEGER PRIMARY KEY,
+            last_deal_time  INTEGER DEFAULT 0,
+            schema_version  INTEGER DEFAULT 0,
+            last_sync_at    INTEGER DEFAULT 0
+        )
+    ''')
+
     # Add columns for Story Notes if they don't exist
-    
+
     c.execute('''
         CREATE TABLE IF NOT EXISTS global_settings (
             id INTEGER PRIMARY KEY,
@@ -364,6 +446,21 @@ def init_db():
     try:
         c.execute("ALTER TABLE global_settings ADD COLUMN auto_close_enabled INTEGER DEFAULT 1")
     except sqlite3.OperationalError: pass
+
+    # "What counts as a trading day" has exactly one definition everywhere (daily P&L,
+    # calendar, hour/weekday breakdowns, review dates, risk snapshots). See
+    # _journal_day_config(). MACHINE = this computer's local timezone, which is also the
+    # frame the frontend renders in, so the two agree by construction.
+    try:
+        c.execute("ALTER TABLE global_settings ADD COLUMN journal_day_anchor TEXT DEFAULT 'MACHINE'")
+    except sqlite3.OperationalError: pass
+    # Only consulted when journal_day_anchor = 'FIXED'.
+    try:
+        c.execute("ALTER TABLE global_settings ADD COLUMN journal_day_offset_min INTEGER DEFAULT 0")
+    except sqlite3.OperationalError: pass
+    # ADD COLUMN backfills existing rows with NULL rather than the DEFAULT, so pin the
+    # single settings row explicitly.
+    c.execute("UPDATE global_settings SET journal_day_anchor = 'MACHINE' WHERE journal_day_anchor IS NULL")
 
     c.execute('''
         CREATE TABLE IF NOT EXISTS daily_equity_baseline (
@@ -695,6 +792,56 @@ profit_lock_state = {}
 profit_lock_lock = threading.Lock()
 
 
+def _journal_day_config(c):
+    """How the app decides which calendar day a trade belongs to.
+
+    There is exactly one definition of "a trading day", and this is it -- daily P&L, review
+    dates, risk snapshots and (later) the calendar and hour/weekday breakdowns all bucket
+    through _journal_date_str(), so they can never disagree about where a day starts.
+
+      MACHINE (default) -- this computer's local timezone. Also exactly what the frontend
+                           gets from `new Date(ts * 1000)`, so backend and UI agree by
+                           construction, including across DST changes.
+      UTC               -- days pinned to UTC.
+      FIXED             -- UTC shifted by journal_day_offset_min, for pinning days to a
+                           broker's server day when it differs from both of the above.
+
+    A fixed offset cannot express MACHINE correctly: it would be an hour out for half the
+    year anywhere that observes DST, which is why this is a mode rather than a number.
+    """
+    anchor, offset_min = 'MACHINE', 0
+    try:
+        c.execute("SELECT journal_day_anchor, journal_day_offset_min FROM global_settings WHERE id = 1")
+        row = c.fetchone()
+        if row:
+            anchor = (row[0] or 'MACHINE').upper()
+            offset_min = int(row[1] or 0)
+    except (sqlite3.OperationalError, TypeError, ValueError):
+        pass
+    if anchor not in ('MACHINE', 'UTC', 'FIXED'):
+        anchor = 'MACHINE'
+    return {"anchor": anchor, "offset_min": offset_min}
+
+
+def _journal_date_str(ts, cfg):
+    """Calendar date ('YYYY-MM-DD') that a UTC timestamp belongs to, in journal-day terms."""
+    ts = int(ts)
+    if cfg["anchor"] == 'MACHINE':
+        # fromtimestamp() applies this machine's rules *as they were at that instant*, so a
+        # trade from last winter keeps the offset that was actually in force then.
+        return datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
+    shift = cfg["offset_min"] * 60 if cfg["anchor"] == 'FIXED' else 0
+    return datetime.utcfromtimestamp(ts + shift).strftime('%Y-%m-%d')
+
+
+def _journal_now(cfg):
+    """'Now' as a naive datetime in the journal's day frame, for walking day lists."""
+    if cfg["anchor"] == 'MACHINE':
+        return datetime.now()
+    shift = timedelta(minutes=cfg["offset_min"]) if cfg["anchor"] == 'FIXED' else timedelta(0)
+    return datetime.now(timezone.utc).replace(tzinfo=None) + shift
+
+
 def _query_risk_range(c, inst_id, date_from, date_to):
     c.execute(
         "SELECT MAX(peak_drawdown_pct), MAX(max_risk_usd), SUM(no_sl_count) FROM risk_snapshots WHERE instance_id = ? AND date BETWEEN ? AND ?",
@@ -733,7 +880,10 @@ def _query_trade_stats(c, inst_id, ts_from, ts_to, current_balance=None):
     if gross_loss < 0:
         profit_factor = gross_profit / abs(gross_loss)
     else:
-        profit_factor = 99.9 if gross_profit > 0 else None
+        # No losing trades at all -- the ratio is genuinely undefined (division by zero),
+        # not "99.9". Return None so the UI renders n/a instead of a fabricated number that
+        # reads like a real, very good result.
+        profit_factor = None
 
     max_streak = 0
     cur_streak = 0
@@ -782,10 +932,17 @@ def _query_daily_pnl(c, inst_id, days):
     one entry per calendar day (0.0 where no trades closed). DB-only (reads
     trading_log, kept fresh by trading_log_sync_thread) — no live MT5 call,
     so this is safe to call from a request handler without touching mt5_lock."""
-    now = datetime.utcnow()
-    ts_from = int((now - timedelta(days=days)).timestamp())
-    ts_to = int(now.timestamp())
+    # int(time.time()), not datetime.utcnow().timestamp(): .timestamp() reads a *naive*
+    # datetime as local time, so on a UTC+5:30 machine utcnow().timestamp() lands 19800s in
+    # the past -- which silently dropped every trade closed in the last 5h30m from this
+    # window. The epochs stored in trading_log are true UTC, so compare against true UTC.
+    ts_to = int(time.time())
+    ts_from = ts_to - days * 86400
 
+    # Read the day config *before* the trade query: _journal_day_config() runs its own
+    # SELECT on this same cursor, which would discard the pending trade rows and leave
+    # every day reading 0.00.
+    cfg = _journal_day_config(c)
     c.execute(
         "SELECT COALESCE(local_time, time) as t, profit FROM trading_log WHERE instance_id = ? AND COALESCE(local_time, time) >= ? AND COALESCE(local_time, time) < ?",
         (inst_id, ts_from, ts_to)
@@ -794,12 +951,15 @@ def _query_daily_pnl(c, inst_id, days):
     for t, profit in c.fetchall():
         if t is None or profit is None:
             continue
-        date_str = datetime.utcfromtimestamp(t).strftime('%Y-%m-%d')
+        date_str = _journal_date_str(t, cfg)
         daily_totals[date_str] = daily_totals.get(date_str, 0.0) + profit
 
+    # The day list is walked back from "now" in the same frame the buckets use, so labels
+    # line up with totals instead of being a day out near midnight.
+    day_cursor = _journal_now(cfg)
     out = []
     for i in range(days, -1, -1):
-        d = now - timedelta(days=i)
+        d = day_cursor - timedelta(days=i)
         date_str = d.strftime('%Y-%m-%d')
         out.append({"date": date_str, "label": d.strftime('%m/%d'), "profit": round(daily_totals.get(date_str, 0.0), 2)})
     return out
@@ -1387,11 +1547,19 @@ def api_portfolio_overview():
     c.execute("SELECT id, name, group_name, account_type, copier_role FROM instances ORDER BY id ASC")
     instances = c.fetchall()
 
-    now = datetime.utcnow()
+    # date_from/date_to query risk_snapshots, whose `date` the poller writes in UTC -- a
+    # range query has to match its own writer's frame, so these stay UTC even though trade
+    # bucketing below uses the journal day. Unifying the two means moving the live daily
+    # reset as well, which is a risk-behaviour decision (a prop firm's daily loss window
+    # is the broker's day, not this machine's), not a display one.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     date_from = (now - timedelta(days=days)).strftime('%Y-%m-%d')
     date_to = now.strftime('%Y-%m-%d')
-    ts_from = int((now - timedelta(days=days)).timestamp())
-    ts_to = int(now.timestamp())
+    # int(time.time()), not naive utcnow().timestamp(): the latter is read as local time and
+    # lands hours in the past (19800s on a UTC+5:30 machine), which was silently excluding
+    # every trade closed within that span from all of this page's metrics.
+    ts_to = int(time.time())
+    ts_from = ts_to - days * 86400
 
     result = []
     for inst_id, name, group_name, account_type, copier_role in instances:
@@ -1827,136 +1995,306 @@ def api_close_group():
     
     return jsonify({"status": "success", "message": f"Closed {total_closed} positions in group {group_name}."})
 
-def sync_trading_log():
-    """Full resync of trading_log from each instance's MT5 deal history.
-    Shared by the manual /api/sync_log route and the periodic background sync thread."""
-    logging.info("Syncing trading log from MT5 instances...")
+# MT5 deal-entry constants, read defensively so the module still imports against a build
+# that renames one. 0=IN (opens volume), 1=OUT, 2=INOUT (reversal), 3=OUT_BY (close-by).
+DEAL_ENTRY_IN = getattr(mt5, 'DEAL_ENTRY_IN', 0)
+DEAL_ENTRY_OUT = getattr(mt5, 'DEAL_ENTRY_OUT', 1)
+DEAL_ENTRY_INOUT = getattr(mt5, 'DEAL_ENTRY_INOUT', 2)
+DEAL_ENTRY_OUT_BY = getattr(mt5, 'DEAL_ENTRY_OUT_BY', 3)
+
+# Bumped whenever the *meaning* of a trading_log row changes, or when a new table needs
+# backfilling from full history. An instance whose stored version is lower gets exactly one
+# forced full rebuild.
+#   v2: one row per position (was one per closing deal, each carrying the whole P&L)
+#   v3: balance_operations captured, so historical deposits/withdrawals exist for the
+#       return series that Sharpe/Sortino/Calmar are computed from
+TRADING_LOG_SCHEMA_VERSION = 3
+
+# Incremental syncs re-examine a little before the bookmark: a position can open before the
+# window and close inside it, and brokers post swap/commission adjustments after the closing
+# deal. Cheap insurance -- these positions are simply rebuilt from source.
+SYNC_OVERLAP_SECONDS = 3 * 24 * 3600
+
+
+def _broker_time_offset(deals):
+    """Seconds to add to a broker-time deal epoch to get a true UTC epoch.
+
+    MT5 reports deal/tick times as epochs expressed in the *server's* timezone, so
+    (wall-clock UTC now - tick epoch now) recovers the constant shift. Returns None when no
+    symbol yields a tick, so callers can refuse to write rows with a fabricated offset.
+    """
+    candidates = []
+    seen = set()
+    for d in reversed(deals):
+        if d.symbol and d.symbol not in seen:
+            seen.add(d.symbol)
+            candidates.append(d.symbol)
+        if len(candidates) >= 10:
+            break
+    if not candidates:
+        all_symbols = mt5.symbols_get() or ()
+        candidates = [s.name for s in all_symbols[:10]]
+
+    for symbol in candidates:
+        mt5.symbol_select(symbol, True)
+        tick = mt5.symbol_info_tick(symbol)
+        if tick and tick.time > 0:
+            return int(time.time()) - tick.time
+    return None
+
+
+def _entry_protection(entry_deal, opened_volume):
+    """(sl, tp, risk_usd) the position was opened with, from the entry *order's* history.
+
+    Deliberately not sourced from live polling: the poller only sees an SL if it happens to
+    sample while the position is open, so it misses fast trades and every stretch where the
+    app wasn't running. Order history persists regardless.
+
+    risk_usd is sized on the position's total opened volume rather than the first entry
+    deal's, so a position scaled into reports the risk it actually carried.
+    """
+    sl = tp = 0.0
+    risk_usd = 0.0
+    try:
+        entry_orders = mt5.history_orders_get(ticket=entry_deal.order)
+    except Exception:
+        entry_orders = None
+    if entry_orders:
+        sl = entry_orders[0].sl or 0.0
+        tp = entry_orders[0].tp or 0.0
+
+    if sl:
+        volume = opened_volume or entry_deal.volume
+        order_type = mt5.ORDER_TYPE_BUY if entry_deal.type == mt5.DEAL_TYPE_BUY else mt5.ORDER_TYPE_SELL
+        calc = mt5.order_calc_profit(order_type, entry_deal.symbol, volume, entry_deal.price, sl)
+        if calc is not None:
+            risk_usd = abs(calc)
+        else:
+            sym_info = mt5.symbol_info(entry_deal.symbol)
+            if sym_info and sym_info.trade_tick_size and sym_info.trade_tick_value:
+                ticks_lost = abs(entry_deal.price - sl) / sym_info.trade_tick_size
+                risk_usd = ticks_lost * sym_info.trade_tick_value * volume
+    return sl, tp, risk_usd
+
+
+def _build_position_row(pos_deals, time_offset):
+    """Collapse every deal of one MT5 position into a single closed-trade row.
+
+    Returns None when the position isn't fully closed (opened volume still exceeds closed
+    volume), so open and partially-closed positions never enter closed-trade history with a
+    half-formed P&L.
+
+    This one-row-per-position shape is the fix for the multi-counting defect: profit,
+    commission and swap are each summed over the position exactly once here, whereas the
+    previous sync wrote one row per closing deal and gave *every* one of them the whole
+    position's total -- turning a three-part scale-out into 3x its real P&L.
+    """
+    trade_deals = [d for d in pos_deals if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)]
+    in_deals = [d for d in trade_deals if d.entry == DEAL_ENTRY_IN]
+    out_deals = [d for d in trade_deals if d.entry in (DEAL_ENTRY_OUT, DEAL_ENTRY_OUT_BY, DEAL_ENTRY_INOUT)]
+    if not in_deals or not out_deals:
+        return None
+
+    opened_volume = sum(d.volume for d in in_deals)
+    closed_volume = sum(d.volume for d in out_deals)
+    if closed_volume + 1e-8 < opened_volume:
+        return None
+
+    in_deals.sort(key=lambda d: (d.time, d.ticket))
+    out_deals.sort(key=lambda d: (d.time, d.ticket))
+    entry_deal = in_deals[0]
+    last_out = out_deals[-1]
+
+    raw_profit = sum(d.profit for d in trade_deals)
+    commission = sum(d.commission for d in trade_deals)
+    swap = sum(d.swap for d in trade_deals)
+
+    def vwap(deals):
+        vol = sum(d.volume for d in deals)
+        return (sum(d.price * d.volume for d in deals) / vol) if vol else 0.0
+
+    return {
+        "position_id": entry_deal.position_id,
+        "ticket": last_out.ticket,
+        "symbol": entry_deal.symbol,
+        # `type` stays the closing deal's type for backward compatibility with existing
+        # readers; `direction` below is the one to actually use.
+        "type": last_out.type,
+        "direction": 0 if entry_deal.type == mt5.DEAL_TYPE_BUY else 1,
+        "volume": closed_volume,
+        "opened_volume": opened_volume,
+        "raw_profit": raw_profit,
+        "commission": commission,
+        "swap": swap,
+        "profit": raw_profit + commission + swap,
+        "time": last_out.time,
+        "local_start_time": entry_deal.time + time_offset,
+        "local_time": last_out.time + time_offset,
+        "magic": entry_deal.magic,
+        "comment": entry_deal.comment,
+        "entry_price": vwap(in_deals),
+        "exit_price": vwap(out_deals),
+        "entry_deal": entry_deal,
+    }
+
+
+def sync_trading_log(full=False):
+    """Refresh trading_log from each instance's MT5 deal history, one row per *position*.
+
+    Incremental by default: only positions touched since that instance's bookmark (minus
+    SYNC_OVERLAP_SECONDS) are rebuilt, instead of deleting all history and re-fetching from
+    the year 2000 on every cycle. Pass full=True to force a complete rebuild.
+    """
+    mode = "full" if full else "incremental"
+    logging.info(f"Syncing trading log from MT5 instances ({mode})...")
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
     c.execute("SELECT id, name, path FROM instances")
     instances = c.fetchall()
-    
+
     if not instances:
         instances = [(None, "Default", None)]
-        
+
     total_synced = 0
-    for inst in instances:
-        inst_id, inst_name, inst_path = inst
-        
+    for inst_id, inst_name, inst_path in instances:
+        bookmark = None
+        if inst_id is not None:
+            c.execute(
+                "SELECT last_deal_time, schema_version FROM trading_log_sync_state WHERE instance_id = ?",
+                (inst_id,)
+            )
+            bookmark = c.fetchone()
+        last_deal_time = (bookmark[0] or 0) if bookmark else 0
+        schema_version = (bookmark[1] or 0) if bookmark else 0
+
+        # inst_id None is the pathless "Default" fallback, which has no bookmark row to key.
+        rebuild = (
+            full
+            or inst_id is None
+            or schema_version < TRADING_LOG_SCHEMA_VERSION
+            or last_deal_time <= 0
+        )
+
         with mt5_lock:
-            if inst_path:
-                initialized = mt5.initialize(path=inst_path)
-            else:
-                initialized = mt5.initialize()
-                
+            initialized = mt5.initialize(path=inst_path) if inst_path else mt5.initialize()
             if not initialized:
                 logging.error(f"Failed to initialize MT5 for instance {inst_name}")
                 continue
-                
-            import datetime
-            from_date = datetime.datetime(2000, 1, 1)
-            to_date = datetime.datetime.now() + datetime.timedelta(days=1)
-            
+
+            # last_deal_time is a raw deal.time, i.e. broker-time-as-epoch, and
+            # history_deals_get() interprets naive datetimes in that same frame -- so the
+            # bookmark round-trips without ever converting to UTC. (local_time is the
+            # UTC-corrected column; it is deliberately not what the bookmark tracks.)
+            from_date = datetime(2000, 1, 1) if rebuild else datetime.utcfromtimestamp(
+                max(0, last_deal_time - SYNC_OVERLAP_SECONDS)
+            )
+            to_date = datetime.now() + timedelta(days=1)
+
             deals = mt5.history_deals_get(from_date, to_date)
             if deals is None:
                 logging.error(f"Failed to get history deals for {inst_name}: {mt5.last_error()}")
                 continue
-                
-            logging.info(f"Fetched {len(deals)} deals from {inst_name}")
-            
-            # Calculate MT5 to Local Time Offset
-            time_offset = 0
-            if len(deals) > 0:
-                import time
-                for d in reversed(deals):
-                    if d.symbol:
-                        mt5.symbol_select(d.symbol, True)
-                        tick = mt5.symbol_info_tick(d.symbol)
-                        if tick and tick.time > 0:
-                            time_offset = int(time.time()) - tick.time
-                            logging.info(f"Calculated time offset for {inst_name}: {time_offset} seconds (using {d.symbol})")
-                            break
-            
-            # Clear existing logs for this instance to ensure a clean sync
-            c.execute("DELETE FROM trading_log WHERE instance_id = ?", (inst_id,))
-            
-            for deal in deals:
-                # Filter for deals that are trades (buy/sell)
-                if deal.type not in (0, 1):
-                    continue
-                    
-                # Filter for deals that are exits (OUT/INOUT/OUT_BY)
-                # entry: 0=IN, 1=OUT, 2=INOUT, 3=OUT_BY
-                # We only want the closing deals because they carry the profit and represent a completed trade.
-                if deal.entry == 0:
-                    continue
-                    
-                # Fetch ALL deals for this position to sum up profit/commission/swap
-                # This handles cases where commission is charged on entry and exit separately.
-                pos_deals = mt5.history_deals_get(position=deal.position_id)
-                if pos_deals:
-                    total_profit = sum(d.profit for d in pos_deals)
-                    total_comm = sum(d.commission for d in pos_deals)
-                    total_swap = sum(d.swap for d in pos_deals)
-                    net_profit = total_profit + total_comm + total_swap
-                    logging.info(f"Position {deal.position_id}: Profit={total_profit}, Comm={total_comm}, Swap={total_swap}, Net={net_profit}")
-                    local_start_time = pos_deals[0].time + time_offset
-                else:
-                    total_profit = deal.profit
-                    total_comm = deal.commission
-                    total_swap = deal.swap
-                    net_profit = deal.profit + deal.commission + deal.swap
-                    logging.info(f"Deal {deal.ticket} (no pos deals): Profit={deal.profit}, Comm={deal.commission}, Swap={deal.swap}, Net={net_profit}")
-                    local_start_time = deal.time + time_offset
 
-                local_close_time = deal.time + time_offset
+            if not deals:
+                continue
 
-                # Recover the SL the position was opened with (and the $ risk it implied) from the
-                # entry order's history, not live polling -- the live poller only catches this if it
-                # happens to sample the position while it's open, so it silently misses fast trades
-                # or any stretch where the app wasn't running. Order history persists regardless.
-                entry_deal = next((d for d in (pos_deals or []) if d.entry == 0), None)
-                sl_at_open = 0.0
-                entry_risk_usd = 0.0
-                if entry_deal is not None:
-                    try:
-                        entry_orders = mt5.history_orders_get(ticket=entry_deal.order)
-                    except Exception:
-                        entry_orders = None
-                    if entry_orders:
-                        sl_at_open = entry_orders[0].sl or 0.0
-                    if sl_at_open:
-                        order_type = mt5.ORDER_TYPE_BUY if entry_deal.type == mt5.DEAL_TYPE_BUY else mt5.ORDER_TYPE_SELL
-                        calc = mt5.order_calc_profit(order_type, entry_deal.symbol, entry_deal.volume, entry_deal.price, sl_at_open)
-                        if calc is not None:
-                            entry_risk_usd = abs(calc)
-                        else:
-                            sym_info = mt5.symbol_info(entry_deal.symbol)
-                            if sym_info and sym_info.trade_tick_size and sym_info.trade_tick_value:
-                                ticks_lost = abs(entry_deal.price - sl_at_open) / sym_info.trade_tick_size
-                                entry_risk_usd = ticks_lost * sym_info.trade_tick_value * entry_deal.volume
+            time_offset = _broker_time_offset(deals)
+            if time_offset is None:
+                # Writing rows with a fabricated 0 offset would silently misdate every trade
+                # by the broker's UTC offset, so skip this instance and retry next cycle.
+                logging.error(f"No tick available to derive broker time offset for {inst_name}; skipping sync")
+                continue
+
+            position_ids = {
+                d.position_id for d in deals
+                if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL) and d.position_id
+            }
+            max_deal_time = max(d.time for d in deals)
+
+            if rebuild:
+                c.execute("DELETE FROM trading_log WHERE instance_id = ?", (inst_id,))
+                c.execute("DELETE FROM balance_operations WHERE instance_id = ?", (inst_id,))
+
+            # Non-trade balance changes: deposits, withdrawals, credits, corrections. Kept
+            # apart from trading_log so they never pollute trade statistics, but recorded so
+            # the daily return series can subtract them out.
+            for d in deals:
+                if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL):
+                    continue
+                amount = (d.profit or 0.0) + (d.commission or 0.0) + (d.swap or 0.0)
+                if amount == 0:
+                    continue
+                c.execute('''
+                    INSERT OR REPLACE INTO balance_operations
+                        (instance_id, ticket, time, local_time, deal_type, amount, comment)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (inst_id, d.ticket, d.time, d.time + time_offset, d.type, amount, d.comment))
+
+            synced_here = 0
+            for pid in sorted(position_ids):
+                pos_deals = mt5.history_deals_get(position=pid)
+                if not pos_deals:
+                    continue
+
+                row = _build_position_row(list(pos_deals), time_offset)
+                if row is None:
+                    continue
+
+                sl_at_open, tp_at_open, entry_risk_usd = _entry_protection(
+                    row["entry_deal"], row["opened_volume"]
+                )
 
                 try:
+                    # Replace rather than insert: an incremental re-run, or a position that
+                    # picked up another partial close since last sync, must not leave the
+                    # previous row behind.
+                    c.execute(
+                        "DELETE FROM trading_log WHERE instance_id = ? AND position_id = ?",
+                        (inst_id, pid)
+                    )
                     c.execute('''
-                        INSERT INTO trading_log (
-                            instance_id, ticket, symbol, type, volume, profit, time, magic, comment, commission, swap, raw_profit, local_start_time, local_time, sl_at_open, entry_risk_usd
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT OR REPLACE INTO trading_log (
+                            instance_id, ticket, position_id, symbol, type, direction, volume, profit,
+                            time, magic, comment, commission, swap, raw_profit, local_start_time,
+                            local_time, sl_at_open, tp_at_open, entry_risk_usd, entry_price, exit_price
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
-                        inst_id, deal.ticket, deal.symbol, deal.type, deal.volume, net_profit, deal.time, deal.magic, deal.comment, total_comm, total_swap, total_profit, local_start_time, local_close_time, sl_at_open, entry_risk_usd
+                        inst_id, row["ticket"], row["position_id"], row["symbol"], row["type"],
+                        row["direction"], row["volume"], row["profit"], row["time"], row["magic"],
+                        row["comment"], row["commission"], row["swap"], row["raw_profit"],
+                        row["local_start_time"], row["local_time"], sl_at_open, tp_at_open,
+                        entry_risk_usd, row["entry_price"], row["exit_price"]
                     ))
-                    total_synced += 1
+                    synced_here += 1
                 except Exception as e:
-                    logging.error(f"Error inserting deal {deal.ticket}: {e}")
-                
-    conn.commit()
+                    logging.error(f"Error writing position {pid} for {inst_name}: {e}")
+
+            if inst_id is not None:
+                c.execute('''
+                    INSERT OR REPLACE INTO trading_log_sync_state
+                        (instance_id, last_deal_time, schema_version, last_sync_at)
+                    VALUES (?, ?, ?, ?)
+                ''', (inst_id, int(max_deal_time), TRADING_LOG_SCHEMA_VERSION, int(time.time())))
+
+            total_synced += synced_here
+            logging.info(
+                f"{inst_name}: {mode} sync wrote {synced_here} closed positions "
+                f"from {len(deals)} deals (offset {time_offset}s)"
+            )
+
+        # Commit per instance so one failing terminal can't discard the others' work.
+        conn.commit()
+
     conn.close()
-    logging.info(f"Sync complete. Synced {total_synced} new deals.")
+    logging.info(f"Sync complete. Wrote {total_synced} closed positions.")
     return total_synced
 
 
 @flask_app.route('/api/sync_log', methods=['POST'])
 def api_sync_log():
-    total_synced = sync_trading_log()
+    # Manual sync is the "something looks wrong, rebuild it" button, so it forces a full
+    # resync; the background thread below stays incremental.
+    total_synced = sync_trading_log(full=request.args.get('full', '1') != '0')
     return jsonify({"status": "success", "synced": total_synced})
 
 
@@ -1979,7 +2317,13 @@ def api_performance():
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
     
-    query = "SELECT l.id, l.instance_id, i.name, l.ticket, l.symbol, l.type, l.volume, l.profit, l.time, l.magic, l.comment, l.commission, l.swap, l.raw_profit, l.local_start_time, l.local_time FROM trading_log l LEFT JOIN instances i ON l.instance_id = i.id"
+    query = (
+        "SELECT l.id, l.instance_id, i.name, l.ticket, l.symbol, l.type, l.volume, l.profit, "
+        "l.time, l.magic, l.comment, l.commission, l.swap, l.raw_profit, l.local_start_time, "
+        "l.local_time, l.position_id, l.direction, l.entry_price, l.exit_price, l.sl_at_open, "
+        "l.tp_at_open, l.entry_risk_usd "
+        "FROM trading_log l LEFT JOIN instances i ON l.instance_id = i.id"
+    )
     conditions = []
     params = []
     
@@ -2006,8 +2350,9 @@ def api_performance():
     trades = []
     total_profit = 0
     profitable_trades = 0
+    scratch_trades = 0
     total_trades = 0
-    
+
     for r in rows:
         trades.append({
             "id": r[0],
@@ -2015,10 +2360,14 @@ def api_performance():
             "instance_name": r[2] or "Default",
             "ticket": r[3],
             "symbol": r[4],
-            # Invert type because we are showing exit deals!
-            # If exit is BUY (0), the trade was SELL.
-            # If exit is SELL (1), the trade was BUY.
-            "type": "SELL" if r[5] == 0 else "BUY" if r[5] == 1 else "BALANCE" if r[5] == 2 else str(r[5]),
+            # direction is stored from the ENTRY deal (0 = long, 1 = short). Rows written
+            # before that column existed only have `type`, which is the *closing* deal's
+            # type and therefore inverted relative to the position -- a long closes with a
+            # SELL deal -- hence the fallback inversion.
+            "type": (
+                ("BUY" if r[17] == 0 else "SELL") if r[17] is not None
+                else ("SELL" if r[5] == 0 else "BUY" if r[5] == 1 else str(r[5]))
+            ),
             "volume": r[6],
             "profit": r[7],
             "time": r[8],
@@ -2028,18 +2377,29 @@ def api_performance():
             "swap": r[12],
             "raw_profit": r[13],
             "local_start_time": r[14],
-            "local_time": r[15]
+            "local_time": r[15],
+            "position_id": r[16],
+            "direction": r[17],
+            "entry_price": r[18],
+            "exit_price": r[19],
+            "sl_at_open": r[20],
+            "tp_at_open": r[21],
+            "entry_risk_usd": r[22],
         })
         
-        # Only count deals with non-zero profit for metrics to avoid counting double
-        # In MT5, profit is only non-zero on deals that close a position.
-        if r[7] != 0:
-            total_profit += r[7]
-            if r[7] > 0:
-                profitable_trades += 1
-            total_trades += 1
-        
-    win_rate = (profitable_trades / total_trades * 100) if total_trades > 0 else 0
+        # Every row is one closed position now, so all of them count. Scratch trades
+        # (exactly breakeven) are excluded from the win-rate denominator rather than
+        # silently counted as losses.
+        profit = r[7] or 0.0
+        total_profit += profit
+        total_trades += 1
+        if profit > 0:
+            profitable_trades += 1
+        elif profit == 0:
+            scratch_trades += 1
+
+    decided_trades = total_trades - scratch_trades
+    win_rate = (profitable_trades / decided_trades * 100) if decided_trades > 0 else 0
     
     conn.close()
     
@@ -2047,7 +2407,8 @@ def api_performance():
         "metrics": {
             "total_profit": round(total_profit, 2),
             "win_rate": round(win_rate, 2),
-            "total_trades": total_trades
+            "total_trades": total_trades,
+            "scratch_trades": scratch_trades
         },
         "trades": trades
     })
@@ -2056,12 +2417,1449 @@ def api_performance():
 def api_review_dates():
     conn = sqlite3.connect('trades.db')
     c = conn.cursor()
-    c.execute("SELECT DISTINCT date(datetime(COALESCE(local_time, time), 'unixepoch')) FROM trading_log ORDER BY date(datetime(COALESCE(local_time, time), 'unixepoch')) DESC")
+    # Bucketed through the same journal-day offset as /api/portfolio_overview's daily P&L,
+    # so a date listed here always matches the day that page attributes trades to.
+    cfg = _journal_day_config(c)
+    c.execute("SELECT DISTINCT COALESCE(local_time, time) FROM trading_log")
     rows = c.fetchall()
     conn.close()
-    
-    dates = [r[0] for r in rows if r[0]]
+
+    dates = sorted({_journal_date_str(r[0], cfg) for r in rows if r[0] is not None}, reverse=True)
     return jsonify({"dates": dates})
+
+
+@flask_app.route('/api/journal/config', methods=['GET', 'POST'])
+def api_journal_config():
+    """The journal-day offset, so the frontend buckets days exactly the way the backend
+    does instead of falling back to the browser's own timezone (which is how a trade can
+    appear on one date in a table and another in the daily P&L)."""
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+
+    if request.method == 'POST':
+        data = request.json or {}
+        anchor = str(data.get('journal_day_anchor', 'MACHINE')).upper()
+        if anchor not in ('MACHINE', 'UTC', 'FIXED'):
+            conn.close()
+            return jsonify({"error": "journal_day_anchor must be MACHINE, UTC or FIXED"}), 400
+        try:
+            offset_min = int(data.get('journal_day_offset_min', 0))
+        except (TypeError, ValueError):
+            conn.close()
+            return jsonify({"error": "journal_day_offset_min must be an integer"}), 400
+        if not -1440 < offset_min < 1440:
+            conn.close()
+            return jsonify({"error": "journal_day_offset_min must be within +/- 24h"}), 400
+        c.execute(
+            "UPDATE global_settings SET journal_day_anchor = ?, journal_day_offset_min = ? WHERE id = 1",
+            (anchor, offset_min)
+        )
+        conn.commit()
+
+    cfg = _journal_day_config(c)
+    conn.close()
+    # current_offset_min is what the anchor resolves to *right now* -- informational, so the
+    # UI can show "days start at 00:00 UTC+05:30" without re-deriving it.
+    now = datetime.now(timezone.utc).astimezone()
+    resolved = (
+        int(now.utcoffset().total_seconds() // 60) if cfg["anchor"] == 'MACHINE'
+        else cfg["offset_min"] if cfg["anchor"] == 'FIXED'
+        else 0
+    )
+    return jsonify({
+        "journal_day_anchor": cfg["anchor"],
+        "journal_day_offset_min": cfg["offset_min"],
+        "current_offset_min": resolved,
+        "today": _journal_date_str(int(time.time()), cfg),
+    })
+
+
+# =============================== TRADING JOURNAL ===============================
+# Per-instance closed-trade analytics. Everything here is DB-only (reads trading_log,
+# kept fresh by trading_log_sync_thread) so these routes never touch mt5_lock and can be
+# polled freely by the UI.
+#
+# House rules for every metric below, so numbers can't quietly disagree with each other:
+#   * one row = one closed position (see sync_trading_log)
+#   * `profit` is already net of commission and swap -- never re-add them
+#   * win > 0, loss < 0, scratch == 0; scratches are excluded from the win-rate denominator
+#     rather than counted as losses
+#   * R metrics only include trades that had a stop, and always ship their coverage %
+#   * a metric that can't be computed returns None, never a sentinel
+
+JOURNAL_TRADE_COLUMNS = (
+    "l.position_id, l.ticket, l.symbol, l.direction, l.type, l.volume, l.profit, "
+    "l.raw_profit, l.commission, l.swap, COALESCE(l.local_time, l.time) AS close_ts, "
+    "l.local_start_time, l.magic, l.comment, l.sl_at_open, l.tp_at_open, "
+    "l.entry_risk_usd, l.entry_price, l.exit_price, l.mae_usd, l.mfe_usd"
+)
+
+DURATION_BUCKETS = (
+    (60, "< 1m"),
+    (300, "1-5m"),
+    (1800, "5-30m"),
+    (3600, "30-60m"),
+    (14400, "1-4h"),
+    (86400, "4-24h"),
+    (float('inf'), "> 1d"),
+)
+
+WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def _journal_dt(ts, cfg):
+    """A timestamp as a naive datetime in the journal's day frame (see _journal_day_config).
+    Hour-of-day and weekday breakdowns read from this, so they agree with the calendar."""
+    ts = int(ts)
+    if cfg["anchor"] == 'MACHINE':
+        return datetime.fromtimestamp(ts)
+    shift = cfg["offset_min"] * 60 if cfg["anchor"] == 'FIXED' else 0
+    return datetime.utcfromtimestamp(ts + shift)
+
+
+def _duration_bucket(seconds):
+    if seconds is None or seconds < 0:
+        return "unknown"
+    for limit, label in DURATION_BUCKETS:
+        if seconds < limit:
+            return label
+    return DURATION_BUCKETS[-1][1]
+
+
+def _fetch_journal_trades(c, inst_id, ts_from=None, ts_to=None, filters=None):
+    """Closed trades for one instance as plain dicts, newest last.
+
+    Annotations are LEFT JOINed on (instance_id, position_id) -- never on trading_log.id,
+    which a resync regenerates.
+    """
+    filters = filters or {}
+    sql = (
+        f"SELECT {JOURNAL_TRADE_COLUMNS}, a.tags, a.grade, a.note "
+        "FROM trading_log l "
+        "LEFT JOIN trade_annotations a "
+        "  ON a.instance_id = l.instance_id AND a.position_id = l.position_id "
+        "WHERE l.instance_id = ?"
+    )
+    params = [inst_id]
+
+    if ts_from is not None:
+        sql += " AND COALESCE(l.local_time, l.time) >= ?"
+        params.append(int(ts_from))
+    if ts_to is not None:
+        sql += " AND COALESCE(l.local_time, l.time) < ?"
+        params.append(int(ts_to))
+    if filters.get('symbol'):
+        sql += " AND l.symbol = ?"
+        params.append(filters['symbol'])
+    if filters.get('magic') is not None:
+        sql += " AND l.magic = ?"
+        params.append(int(filters['magic']))
+    sql += " ORDER BY COALESCE(l.local_time, l.time) ASC"
+
+    trades = []
+    for r in c.execute(sql, params):
+        close_ts = r[10]
+        open_ts = r[11]
+        duration = (close_ts - open_ts) if (close_ts is not None and open_ts) else None
+        risk = r[16] or 0.0
+        profit = r[6] or 0.0
+        # direction is NULL on rows written before Phase 0; fall back to inverting the
+        # closing deal's type, which is what the old schema encoded.
+        direction = r[3]
+        if direction is None:
+            direction = 1 if r[4] == 0 else 0
+        trades.append({
+            "position_id": r[0],
+            "ticket": r[1],
+            "symbol": r[2],
+            "direction": direction,
+            "side": "LONG" if direction == 0 else "SHORT",
+            "volume": r[5],
+            "profit": profit,
+            "raw_profit": r[7] or 0.0,
+            "commission": r[8] or 0.0,
+            "swap": r[9] or 0.0,
+            "close_ts": close_ts,
+            "open_ts": open_ts,
+            "duration_sec": duration,
+            "magic": r[12],
+            "comment": r[13],
+            "sl_at_open": r[14] or 0.0,
+            "tp_at_open": r[15] or 0.0,
+            "entry_risk_usd": risk,
+            "entry_price": r[17] or 0.0,
+            "exit_price": r[18] or 0.0,
+            "r_multiple": (profit / risk) if risk > 0 else None,
+            # NULL until the M1 backfill has run; 0.0 is a real value, so don't coalesce.
+            "mae_usd": r[19],
+            "mfe_usd": r[20],
+            "mae_r": (r[19] / risk) if (risk > 0 and r[19] is not None) else None,
+            "mfe_r": (r[20] / risk) if (risk > 0 and r[20] is not None) else None,
+            "tags": r[21] or "",
+            "grade": r[22] or "",
+            "note": r[23] or "",
+        })
+
+    # Applied in Python rather than SQL because they derive from the journal day frame
+    # (direction fallback, hour/weekday) rather than from a stored column.
+    if filters.get('direction') in (0, 1):
+        trades = [t for t in trades if t['direction'] == filters['direction']]
+    if filters.get('outcome'):
+        want = filters['outcome']
+        trades = [t for t in trades if
+                  (want == 'win' and t['profit'] > 0)
+                  or (want == 'loss' and t['profit'] < 0)
+                  or (want == 'scratch' and t['profit'] == 0)]
+    return trades
+
+
+def _stdev(values):
+    """Sample standard deviation; None below two points, where it is undefined."""
+    n = len(values)
+    if n < 2:
+        return None
+    mean = sum(values) / n
+    return math.sqrt(sum((v - mean) ** 2 for v in values) / (n - 1))
+
+
+def _streaks(profits):
+    """(max_win_streak, max_loss_streak, current_streak) -- current is signed:
+    +3 means three wins in a row, -2 two losses. Scratches break a streak without
+    starting one."""
+    max_win = max_loss = 0
+    cur_win = cur_loss = 0
+    for p in profits:
+        if p > 0:
+            cur_win += 1
+            cur_loss = 0
+        elif p < 0:
+            cur_loss += 1
+            cur_win = 0
+        else:
+            cur_win = cur_loss = 0
+        max_win = max(max_win, cur_win)
+        max_loss = max(max_loss, cur_loss)
+    current = cur_win if cur_win else -cur_loss
+    return max_win, max_loss, current
+
+
+def _drawdown_series(trades, start_balance=None):
+    """Running realized equity and the underwater curve, one point per closed trade.
+
+    When start_balance is known the drawdown is a true percentage of the running
+    high-water mark; without it only the dollar depth is meaningful, and pct is reported
+    against the peak *cumulative P&L*, which is why the caller should pass a balance
+    whenever it has one.
+    """
+    points = []
+    running = start_balance if start_balance is not None else 0.0
+    peak = running
+    max_dd_usd = 0.0
+    max_dd_pct = 0.0
+
+    for t in trades:
+        running += t['profit']
+        peak = max(peak, running)
+        dd_usd = peak - running
+        dd_pct = (dd_usd / peak * 100.0) if peak > 0 else 0.0
+        max_dd_usd = max(max_dd_usd, dd_usd)
+        max_dd_pct = max(max_dd_pct, dd_pct)
+        points.append({
+            "ts": t['close_ts'],
+            "equity": round(running, 2),
+            "dd_usd": round(dd_usd, 2),
+            "dd_pct": round(dd_pct, 4),
+        })
+
+    current_dd_usd = round(peak - running, 2) if points else 0.0
+    current_dd_pct = round((peak - running) / peak * 100.0, 4) if points and peak > 0 else 0.0
+    return {
+        "points": points,
+        "max_dd_usd": round(max_dd_usd, 2),
+        "max_dd_pct": round(max_dd_pct, 4),
+        "current_dd_usd": current_dd_usd,
+        "current_dd_pct": current_dd_pct,
+    }
+
+
+def _journal_metrics(trades, start_balance=None):
+    """Every headline number for one set of closed trades.
+
+    Pure: takes rows, returns numbers, touches no DB and no MT5. That is what makes it
+    testable against hand-computed cases.
+    """
+    total = len(trades)
+    if total == 0:
+        return {
+            "total_trades": 0, "wins": 0, "losses": 0, "scratches": 0, "win_rate": None,
+            "net_pnl": 0.0, "gross_profit": 0.0, "gross_loss": 0.0, "profit_factor": None,
+            "avg_win": None, "avg_loss": None, "payoff_ratio": None,
+            "breakeven_win_rate": None, "expectancy_usd": None, "expectancy_r": None,
+            "r_coverage_pct": 0.0, "r_trades": 0, "sqn": None, "std_r": None,
+            "largest_win": 0.0, "largest_loss": 0.0, "max_win_streak": 0,
+            "max_loss_streak": 0, "current_streak": 0, "commission_total": 0.0,
+            "swap_total": 0.0, "cost_drag_pct": None, "no_sl_count": 0,
+            "avg_hold_win_sec": None, "avg_hold_loss_sec": None, "avg_hold_sec": None,
+            "max_dd_usd": 0.0, "max_dd_pct": 0.0, "current_dd_usd": 0.0,
+            "current_dd_pct": 0.0, "total_volume": 0.0,
+        }
+
+    profits = [t['profit'] for t in trades]
+    wins = [p for p in profits if p > 0]
+    losses = [p for p in profits if p < 0]
+    scratches = total - len(wins) - len(losses)
+
+    gross_profit = sum(wins)
+    gross_loss = sum(losses)          # negative
+    net_pnl = sum(profits)
+
+    decided = len(wins) + len(losses)
+    win_rate = (len(wins) / decided * 100.0) if decided else None
+
+    avg_win = (gross_profit / len(wins)) if wins else None
+    avg_loss = (gross_loss / len(losses)) if losses else None   # negative
+    payoff = (avg_win / abs(avg_loss)) if (avg_win and avg_loss) else None
+    # The win rate this payoff ratio needs just to break even -- shown beside the actual
+    # win rate, it says immediately whether the edge is real.
+    breakeven_wr = (1.0 / (1.0 + payoff) * 100.0) if payoff else None
+
+    profit_factor = (gross_profit / abs(gross_loss)) if gross_loss < 0 else None
+
+    r_values = [t['r_multiple'] for t in trades if t['r_multiple'] is not None]
+    expectancy_r = (sum(r_values) / len(r_values)) if r_values else None
+    std_r = _stdev(r_values)
+    # Van Tharp SQN. Suppressed below 30 trades, where the estimator is too unstable to
+    # report as a number without inviting a false read.
+    sqn = (
+        math.sqrt(len(r_values)) * expectancy_r / std_r
+        if (len(r_values) >= 30 and std_r and std_r > 0) else None
+    )
+
+    max_win_streak, max_loss_streak, current_streak = _streaks(profits)
+
+    commission_total = sum(t['commission'] for t in trades)
+    swap_total = sum(t['swap'] for t in trades)
+    # What fraction of the gross winnings the broker took. Swap is the one that quietly
+    # kills carry-holding EAs, which is why it is tracked separately from commission.
+    cost_drag = (
+        (abs(commission_total) + abs(swap_total)) / gross_profit * 100.0
+        if gross_profit > 0 else None
+    )
+
+    win_holds = [t['duration_sec'] for t in trades if t['profit'] > 0 and t['duration_sec'] is not None]
+    loss_holds = [t['duration_sec'] for t in trades if t['profit'] < 0 and t['duration_sec'] is not None]
+    all_holds = [t['duration_sec'] for t in trades if t['duration_sec'] is not None]
+
+    dd = _drawdown_series(trades, start_balance)
+
+    return {
+        "total_trades": total,
+        "wins": len(wins),
+        "losses": len(losses),
+        "scratches": scratches,
+        "win_rate": win_rate,
+        "net_pnl": net_pnl,
+        "gross_profit": gross_profit,
+        "gross_loss": gross_loss,
+        "profit_factor": profit_factor,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "payoff_ratio": payoff,
+        "breakeven_win_rate": breakeven_wr,
+        "expectancy_usd": net_pnl / total,
+        "expectancy_r": expectancy_r,
+        "r_trades": len(r_values),
+        "r_coverage_pct": len(r_values) / total * 100.0,
+        "std_r": std_r,
+        "sqn": sqn,
+        "largest_win": max(profits) if profits else 0.0,
+        "largest_loss": min(profits) if profits else 0.0,
+        "max_win_streak": max_win_streak,
+        "max_loss_streak": max_loss_streak,
+        "current_streak": current_streak,
+        "commission_total": commission_total,
+        "swap_total": swap_total,
+        "cost_drag_pct": cost_drag,
+        "no_sl_count": sum(1 for t in trades if not t['sl_at_open']),
+        "avg_hold_win_sec": (sum(win_holds) / len(win_holds)) if win_holds else None,
+        "avg_hold_loss_sec": (sum(loss_holds) / len(loss_holds)) if loss_holds else None,
+        "avg_hold_sec": (sum(all_holds) / len(all_holds)) if all_holds else None,
+        "total_volume": sum(t['volume'] or 0.0 for t in trades),
+        "max_dd_usd": dd["max_dd_usd"],
+        "max_dd_pct": dd["max_dd_pct"],
+        "current_dd_usd": dd["current_dd_usd"],
+        "current_dd_pct": dd["current_dd_pct"],
+    }
+
+
+# --- Phase 2: risk-adjusted ratios, distribution shape, Monte Carlo -------------------
+#
+# The ratios below all consume a *daily return series*, which this app has to reconstruct:
+# there is no historical equity record, only closed trades. So returns here are
+# balance-based (realized) rather than equity-based (mark-to-market). That is the same
+# thing every broker-statement analyser does, but it means an open position's floating
+# swing never shows up as volatility. Every response says so via `basis`.
+
+# Below this many observations the estimators are too unstable to publish as a number.
+MIN_RETURN_DAYS = 60
+MIN_MC_TRADES = 20
+
+
+def _fetch_balance_ops(c, inst_id, ts_from=None, ts_to=None):
+    sql = "SELECT COALESCE(local_time, time), amount FROM balance_operations WHERE instance_id = ?"
+    params = [inst_id]
+    if ts_from is not None:
+        sql += " AND COALESCE(local_time, time) >= ?"
+        params.append(int(ts_from))
+    if ts_to is not None:
+        sql += " AND COALESCE(local_time, time) < ?"
+        params.append(int(ts_to))
+    return c.execute(sql, params).fetchall()
+
+
+def _daily_return_series(c, inst_id, trades, ts_from, ts_to, current_balance, cfg):
+    """Daily realized returns, with deposits and withdrawals removed.
+
+    A day's return is that day's trade P&L over the balance the day *started* with.
+    Deposits move the base without being a return, so they are added to the next day's
+    starting balance but never to the numerator -- otherwise funding an account reads as a
+    spectacular trading day.
+
+    Returns None when there is no live balance to anchor to: a percentage return needs a
+    real denominator, and inventing one would quietly corrupt every ratio downstream.
+    """
+    if current_balance is None or not trades:
+        return None
+
+    ops = _fetch_balance_ops(c, inst_id, ts_from, ts_to)
+
+    # Walk the balance back to the start of the window: strip everything that happened
+    # after it, then the window's own trade P&L and funding.
+    after_pnl = c.execute(
+        "SELECT COALESCE(SUM(profit), 0) FROM trading_log "
+        "WHERE instance_id = ? AND COALESCE(local_time, time) >= ?",
+        (inst_id, ts_to)
+    ).fetchone()[0] or 0.0
+    after_ops = c.execute(
+        "SELECT COALESCE(SUM(amount), 0) FROM balance_operations "
+        "WHERE instance_id = ? AND COALESCE(local_time, time) >= ?",
+        (inst_id, ts_to)
+    ).fetchone()[0] or 0.0
+
+    window_pnl = sum(t['profit'] for t in trades)
+    window_ops = sum(a for _, a in ops)
+    start_balance = current_balance - after_pnl - after_ops - window_pnl - window_ops
+
+    pnl_by_day = {}
+    for t in trades:
+        pnl_by_day[_journal_date_str(t['close_ts'], cfg)] = (
+            pnl_by_day.get(_journal_date_str(t['close_ts'], cfg), 0.0) + t['profit']
+        )
+    ops_by_day = {}
+    for ts, amount in ops:
+        day = _journal_date_str(ts, cfg)
+        ops_by_day[day] = ops_by_day.get(day, 0.0) + amount
+
+    first_day = datetime.strptime(min(pnl_by_day), '%Y-%m-%d')
+    last_day = datetime.strptime(max(pnl_by_day), '%Y-%m-%d')
+
+    series = []
+    balance = start_balance
+    day = first_day
+    while day <= last_day:
+        key = day.strftime('%Y-%m-%d')
+        pnl = pnl_by_day.get(key, 0.0)
+        funding = ops_by_day.get(key, 0.0)
+        # Funding lands before the day's trading: capital deposited on day D is available to
+        # trade that same day. Applying it afterwards left a zero opening balance on the day
+        # an account was funded, dropping that date out of the return series entirely.
+        balance += funding
+
+        # Weekends are skipped unless something actually happened -- most instruments are
+        # closed, and padding them with zeros would understate volatility. Crypto days with
+        # real trades still count, which is why this is a data test, not a calendar test.
+        include = day.weekday() < 5 or pnl != 0.0 or funding != 0.0
+        if include and balance > 0:
+            series.append({
+                "date": key,
+                "start_balance": round(balance, 2),
+                "pnl": round(pnl, 2),
+                "funding": round(funding, 2),
+                "ret": pnl / balance,
+            })
+        balance += pnl
+        day += timedelta(days=1)
+
+    return {"series": series, "start_balance": round(start_balance, 2), "end_balance": round(balance, 2)}
+
+
+def _downside_deviation(returns, mar=0.0):
+    """Standard Sortino denominator: RMS of shortfalls below the minimum acceptable
+    return, averaged over *all* periods (not just the losing ones)."""
+    if not returns:
+        return None
+    shortfalls = [min(r - mar, 0.0) ** 2 for r in returns]
+    return math.sqrt(sum(shortfalls) / len(shortfalls))
+
+
+def _ulcer_index(balances):
+    """RMS of percentage drawdown at every point. Unlike max drawdown -- a single unlucky
+    sample -- this measures how much time was spent underwater and how deep."""
+    if not balances:
+        return None
+    peak = balances[0]
+    squares = []
+    for b in balances:
+        peak = max(peak, b)
+        dd = ((peak - b) / peak * 100.0) if peak > 0 else 0.0
+        squares.append(dd * dd)
+    return math.sqrt(sum(squares) / len(squares))
+
+
+def _risk_adjusted_metrics(daily):
+    """Sharpe / Sortino / Calmar / Ulcer from a daily return series.
+
+    Risk-free rate is taken as zero and said so. periods_per_year is measured from the data
+    rather than assumed to be 252, so an instrument that trades weekends annualises on its
+    own calendar instead of an equities one.
+    """
+    empty = {
+        "sharpe": None, "sortino": None, "calmar": None, "ulcer_index": None,
+        "volatility_annual_pct": None, "return_annual_pct": None, "total_return_pct": None,
+        "max_dd_pct": None, "observations": 0, "periods_per_year": None,
+        "sufficient": False, "min_observations": MIN_RETURN_DAYS,
+        "opening_balance": None, "closing_balance": None, "funding_total": None,
+    }
+    if not daily or not daily["series"]:
+        return empty
+
+    series = daily["series"]
+    returns = [d["ret"] for d in series]
+    n = len(returns)
+
+    balances = [d["start_balance"] for d in series] + [daily["end_balance"]]
+    span_days = (
+        datetime.strptime(series[-1]["date"], '%Y-%m-%d')
+        - datetime.strptime(series[0]["date"], '%Y-%m-%d')
+    ).days + 1
+    periods_per_year = (n / span_days * 365.25) if span_days > 0 else None
+
+    start_b, end_b = daily["start_balance"], daily["end_balance"]
+
+    # Time-weighted return: chain the daily returns geometrically. Each day is already
+    # measured against the balance that day actually started with, so a deposit changes the
+    # base without ever appearing as performance -- which is the whole reason TWR is the
+    # standard for accounts with cash flows.
+    #
+    # The naive (end - funding) / start form this replaced broke outright whenever the
+    # account was *funded inside the window*: the reconstructed opening balance is then 0,
+    # and total return came back n/a while every other figure computed normally.
+    twr = 1.0
+    for r in returns:
+        twr *= (1.0 + r)
+    total_return = twr - 1.0 if returns else None
+
+    max_dd_pct = 0.0
+    peak = balances[0]
+    for b in balances:
+        peak = max(peak, b)
+        if peak > 0:
+            max_dd_pct = max(max_dd_pct, (peak - b) / peak * 100.0)
+
+    ulcer = _ulcer_index(balances)
+
+    out = dict(empty)
+    out.update({
+        "observations": n,
+        "periods_per_year": round(periods_per_year, 1) if periods_per_year else None,
+        "total_return_pct": round(total_return * 100.0, 3) if total_return is not None else None,
+        "max_dd_pct": round(max_dd_pct, 3),
+        "ulcer_index": round(ulcer, 3) if ulcer is not None else None,
+        "sufficient": n >= MIN_RETURN_DAYS,
+        # Exposed so the return can be audited against the account it was measured on.
+        # opening_balance is legitimately 0 when the account was funded inside the window --
+        # that is why the return is time-weighted rather than a simple end/start ratio.
+        "opening_balance": round(start_b, 2),
+        "closing_balance": round(end_b, 2),
+        "funding_total": round(sum(d["funding"] for d in series), 2),
+    })
+
+    # Everything below is a distribution estimate; publishing it on a handful of days would
+    # dress noise up as authority.
+    if n < MIN_RETURN_DAYS or periods_per_year is None:
+        return out
+
+    mean_r = sum(returns) / n
+    sd = _stdev(returns)
+    dd_dev = _downside_deviation(returns)
+    ann = math.sqrt(periods_per_year)
+
+    if span_days > 0 and total_return is not None and total_return > -1:
+        annual_return = (1.0 + total_return) ** (365.25 / span_days) - 1.0
+    else:
+        annual_return = None
+
+    out.update({
+        "sharpe": round(mean_r / sd * ann, 3) if sd and sd > 0 else None,
+        "sortino": round(mean_r / dd_dev * ann, 3) if dd_dev and dd_dev > 0 else None,
+        "volatility_annual_pct": round(sd * ann * 100.0, 3) if sd else None,
+        "return_annual_pct": round(annual_return * 100.0, 3) if annual_return is not None else None,
+        "calmar": (
+            round(annual_return * 100.0 / max_dd_pct, 3)
+            if (annual_return is not None and max_dd_pct > 0) else None
+        ),
+    })
+    return out
+
+
+def _r_distribution(trades, bin_size=0.5):
+    """Histogram of R-multiples, plus how concentrated the profit is.
+
+    The concentration numbers are the point of this panel: a strategy whose gross profit is
+    mostly three outliers has not demonstrated an edge, however good the headline
+    expectancy looks.
+    """
+    r_values = [t['r_multiple'] for t in trades if t['r_multiple'] is not None]
+    profits = sorted((t['profit'] for t in trades if t['profit'] > 0), reverse=True)
+    gross_profit = sum(profits)
+
+    def share(k):
+        return round(sum(profits[:k]) / gross_profit * 100.0, 2) if gross_profit > 0 and profits else None
+
+    top_decile = max(1, len(profits) // 10) if profits else 0
+
+    bins = []
+    if r_values:
+        lo = math.floor(min(r_values) / bin_size) * bin_size
+        hi = math.ceil(max(r_values) / bin_size) * bin_size
+        edges = []
+        e = lo
+        while e < hi - 1e-9:
+            edges.append(e)
+            e += bin_size
+        if not edges:
+            edges = [lo]
+        counts = [0] * len(edges)
+        for r in r_values:
+            idx = min(int((r - lo) / bin_size), len(edges) - 1)
+            counts[max(0, idx)] += 1
+        bins = [
+            {
+                "start": round(edges[i], 2),
+                "end": round(edges[i] + bin_size, 2),
+                "label": f"{edges[i]:+.1f}R",
+                "count": counts[i],
+                "is_loss": edges[i] + bin_size <= 0.0001,
+            }
+            for i in range(len(edges))
+        ]
+
+    return {
+        "bin_size": bin_size,
+        "bins": bins,
+        "r_trades": len(r_values),
+        "coverage_pct": round(len(r_values) / len(trades) * 100.0, 1) if trades else 0.0,
+        "min_r": round(min(r_values), 2) if r_values else None,
+        "max_r": round(max(r_values), 2) if r_values else None,
+        "median_r": round(sorted(r_values)[len(r_values) // 2], 3) if r_values else None,
+        "top1_share_pct": share(1),
+        "top3_share_pct": share(3),
+        "top_decile_share_pct": share(top_decile) if top_decile else None,
+        "winners": len(profits),
+    }
+
+
+def _monte_carlo_drawdown(trades, start_balance, iterations=5000, seed=None):
+    """Reshuffle the *actual* trade sequence many times to see what drawdowns this strategy
+    could plausibly have produced.
+
+    Permutation, not resampling with replacement: the trade set is held fixed and only its
+    order changes, which answers the question a trader actually has -- "was this drawdown
+    bad luck in sequencing, or is something broken?" A current drawdown sitting at the 60th
+    percentile is normal; one past the 99th is a signal.
+    """
+    profits = [t['profit'] for t in trades]
+    n = len(profits)
+    if n < MIN_MC_TRADES or start_balance is None or start_balance <= 0:
+        return {
+            "sufficient": False, "min_trades": MIN_MC_TRADES, "trades": n,
+            "iterations": 0, "percentiles": {}, "actual_max_dd_pct": None,
+            "actual_percentile": None, "final_percentiles": {}, "prob_worse": None,
+        }
+
+    # Keep the work bounded on large histories; 2000 paths still resolves the tail fine.
+    iterations = max(200, min(iterations, 20000))
+    if n * iterations > 4_000_000:
+        iterations = max(200, 4_000_000 // n)
+
+    rng = random.Random(seed)
+
+    def max_dd_pct(sequence):
+        balance = start_balance
+        peak = balance
+        worst = 0.0
+        for p in sequence:
+            balance += p
+            peak = max(peak, balance)
+            if peak > 0:
+                worst = max(worst, (peak - balance) / peak * 100.0)
+        return worst, balance
+
+    actual_dd, _ = max_dd_pct(profits)
+
+    def pctile(sorted_vals, p):
+        if not sorted_vals:
+            return None
+        idx = min(len(sorted_vals) - 1, max(0, int(round(p / 100.0 * (len(sorted_vals) - 1)))))
+        return round(sorted_vals[idx], 2)
+
+    # Pass 1 -- permutation. Same trades, different order. Isolates sequencing risk: how bad
+    # a drawdown this exact set of results could have produced if the losses had clustered
+    # differently. Final P&L is invariant here by construction (a sum does not care about
+    # order), which is why the outcome distribution comes from pass 2 instead.
+    shuffled = list(profits)
+    dds = []
+    for _ in range(iterations):
+        rng.shuffle(shuffled)
+        dd, _final = max_dd_pct(shuffled)
+        dds.append(dd)
+    dds.sort()
+
+    below = sum(1 for d in dds if d <= actual_dd)
+    actual_percentile = round(below / len(dds) * 100.0, 1)
+
+    # Pass 2 -- bootstrap with replacement. Draws n trades from the same distribution to
+    # answer the forward-looking question: if the edge holds, what does the *next* run of
+    # this many trades plausibly look like? Unlike pass 1 this does vary the total.
+    boot_finals = []
+    boot_dds = []
+    for _ in range(iterations):
+        sample = [profits[rng.randrange(n)] for _ in range(n)]
+        dd, final = max_dd_pct(sample)
+        boot_dds.append(dd)
+        boot_finals.append(final - start_balance)
+    boot_finals.sort()
+    boot_dds.sort()
+
+    return {
+        "sufficient": True,
+        "min_trades": MIN_MC_TRADES,
+        "trades": n,
+        "iterations": iterations,
+        "start_balance": round(start_balance, 2),
+        "actual_max_dd_pct": round(actual_dd, 3),
+        "actual_percentile": actual_percentile,
+        "prob_worse": round(100.0 - actual_percentile, 1),
+        # Sequencing risk (permutation)
+        "percentiles": {str(p): pctile(dds, p) for p in (50, 75, 90, 95, 99)},
+        # Forward outlook (bootstrap)
+        "bootstrap": {
+            "final_percentiles": {str(p): pctile(boot_finals, p) for p in (5, 25, 50, 75, 95)},
+            "dd_percentiles": {str(p): pctile(boot_dds, p) for p in (50, 90, 95, 99)},
+            "prob_losing": round(sum(1 for f in boot_finals if f < 0) / len(boot_finals) * 100.0, 1),
+            "actual_total": round(sum(profits), 2),
+        },
+    }
+
+
+def _edge_ratio(trades):
+    """Mean favourable excursion over mean adverse excursion, both normalised by the trade's
+    own risk. Above 1 means trades travel further in your favour than against you before
+    resolving -- the cleanest evidence that entries have an edge independent of exits."""
+    mfe_r, mae_r = [], []
+    for t in trades:
+        risk = t.get('entry_risk_usd') or 0.0
+        if risk <= 0 or t.get('mfe_usd') is None or t.get('mae_usd') is None:
+            continue
+        mfe_r.append(abs(t['mfe_usd']) / risk)
+        mae_r.append(abs(t['mae_usd']) / risk)
+    if not mfe_r:
+        return {"edge_ratio": None, "avg_mfe_r": None, "avg_mae_r": None, "sample": 0}
+    avg_mfe = sum(mfe_r) / len(mfe_r)
+    avg_mae = sum(mae_r) / len(mae_r)
+    return {
+        "edge_ratio": round(avg_mfe / avg_mae, 3) if avg_mae > 0 else None,
+        "avg_mfe_r": round(avg_mfe, 3),
+        "avg_mae_r": round(avg_mae, 3),
+        "sample": len(mfe_r),
+    }
+
+
+def _journal_group_stats(trades):
+    """The subset of metrics that make sense as columns in a breakdown table."""
+    m = _journal_metrics(trades)
+    return {
+        "trades": m["total_trades"],
+        "net_pnl": round(m["net_pnl"], 2),
+        "win_rate": round(m["win_rate"], 2) if m["win_rate"] is not None else None,
+        "profit_factor": round(m["profit_factor"], 3) if m["profit_factor"] is not None else None,
+        "expectancy_usd": round(m["expectancy_usd"], 2) if m["expectancy_usd"] is not None else None,
+        "expectancy_r": round(m["expectancy_r"], 3) if m["expectancy_r"] is not None else None,
+        "r_coverage_pct": round(m["r_coverage_pct"], 1),
+        "max_dd_usd": m["max_dd_usd"],
+        "avg_hold_sec": round(m["avg_hold_sec"]) if m["avg_hold_sec"] is not None else None,
+        "gross_profit": round(m["gross_profit"], 2),
+        "gross_loss": round(m["gross_loss"], 2),
+    }
+
+
+def _journal_window(request_args, c):
+    """(ts_from, ts_to, days) for a request. days=0 means all history.
+
+    Uses int(time.time()) rather than a naive utcnow().timestamp(), which reads as local
+    time and lands hours in the past -- see the note in _query_daily_pnl.
+    """
+    try:
+        days = int(request_args.get('days', 90))
+    except (TypeError, ValueError):
+        days = 90
+    days = max(0, min(days, 3650))
+    ts_to = int(time.time())
+    ts_from = None if days == 0 else ts_to - days * 86400
+    return ts_from, ts_to, days
+
+
+def _pct_of(value, base):
+    """A value as a percentage of the window's opening capital. None when there is no
+    denominator to divide by -- an invented base would make every percentage on the page a
+    guess."""
+    if value is None or not base or base <= 0:
+        return None
+    return round(value / base * 100.0, 4)
+
+
+def _reference_balance(c, inst_id, ts_from, ts_to, current_balance):
+    """The capital this window opened with -- the single denominator behind every % figure
+    on the page.
+
+    One base for everything, deliberately. Percentages that each used a different
+    denominator (opening balance here, balance-at-the-time there) would not add up, and a
+    breakdown whose rows don't sum to the total is worse than no percentages at all.
+
+    Computed from the *window bounds only*, never from the filtered trade set: if it moved
+    when the user filtered to one EA, that EA's "% return" would be measured against a
+    different account size than everything else on screen.
+
+    Walks back from the live balance: strip what happened after the window, then the
+    window's own trades and funding. If the account was *funded inside* the window that
+    leaves 0, so the funding is added back -- the meaningful denominator is the capital that
+    was actually available to trade.
+    """
+    if current_balance is None:
+        return None
+    lo = int(ts_from) if ts_from is not None else 0
+
+    def total(table, col, frm, to=None):
+        sql = (f"SELECT COALESCE(SUM({col}), 0) FROM {table} "
+               "WHERE instance_id = ? AND COALESCE(local_time, time) >= ?")
+        params = [inst_id, frm]
+        if to is not None:
+            sql += " AND COALESCE(local_time, time) < ?"
+            params.append(to)
+        return c.execute(sql, params).fetchone()[0] or 0.0
+
+    after_pnl = total('trading_log', 'profit', ts_to)
+    after_ops = total('balance_operations', 'amount', ts_to)
+    window_pnl = total('trading_log', 'profit', lo, ts_to)
+    window_ops = total('balance_operations', 'amount', lo, ts_to)
+
+    opening = current_balance - after_pnl - after_ops - window_pnl - window_ops
+    if opening <= 0:
+        opening += window_ops
+    return round(opening, 2) if opening > 0 else None
+
+
+def _journal_instance(c, inst_id):
+    c.execute(
+        "SELECT id, name, group_name, account_type, copier_role, trade_locked "
+        "FROM instances WHERE id = ?", (inst_id,)
+    )
+    r = c.fetchone()
+    if not r:
+        return None
+    return {
+        "id": r[0], "name": r[1], "group_name": r[2] or 'Ungrouped',
+        "account_type": r[3] or 'PERSONAL', "copier_role": r[4] or 'NONE',
+        "trade_locked": bool(r[5]),
+    }
+
+
+def _journal_request_filters(args):
+    filters = {}
+    if args.get('symbol'):
+        filters['symbol'] = args['symbol']
+    if args.get('magic') not in (None, '', 'all'):
+        try:
+            filters['magic'] = int(args['magic'])
+        except (TypeError, ValueError):
+            pass
+    if args.get('direction') in ('0', '1'):
+        filters['direction'] = int(args['direction'])
+    elif args.get('direction') in ('LONG', 'SHORT'):
+        filters['direction'] = 0 if args['direction'] == 'LONG' else 1
+    if args.get('outcome') in ('win', 'loss', 'scratch'):
+        filters['outcome'] = args['outcome']
+    return filters
+
+
+# --- MAE/MFE backfill -----------------------------------------------------------------
+# Reconstructed from M1 bars rather than sampled live: the poller only sees a position if
+# it happens to be open at a sample instant, so live sampling misses fast trades entirely
+# and can never recover history. copy_rates_range works retroactively over everything the
+# broker still holds, so a single pass fills years of trades.
+
+mae_backfill_state = {}
+mae_backfill_lock = threading.Lock()
+
+
+def _backfill_mae_mfe(inst_id, inst_path, limit=None):
+    """Fill mae_usd/mfe_usd for trades that don't have them yet.
+
+    Deliberately takes mt5_lock per trade rather than for the whole job: this can run for
+    minutes over a long history, and holding the lock throughout would stall the poller and
+    with it every live risk alert.
+    """
+    def progress(**kw):
+        with mae_backfill_lock:
+            mae_backfill_state.setdefault(inst_id, {}).update(kw)
+
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    sql = (
+        "SELECT position_id, symbol, direction, volume, entry_price, local_start_time, "
+        "local_time, time FROM trading_log "
+        "WHERE instance_id = ? AND mae_usd IS NULL AND position_id IS NOT NULL "
+        "AND entry_price > 0 AND local_start_time IS NOT NULL "
+        "ORDER BY COALESCE(local_time, time) DESC"
+    )
+    params = [inst_id]
+    if limit:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    rows = c.execute(sql, params).fetchall()
+
+    progress(status='RUNNING', total=len(rows), done=0, filled=0, failed=0, started_at=int(time.time()))
+    if not rows:
+        progress(status='IDLE', message='Nothing to backfill')
+        conn.close()
+        return {"total": 0, "filled": 0, "failed": 0}
+
+    filled = failed = 0
+    for i, (pid, symbol, direction, volume, entry_price, open_utc, close_utc, broker_close) in enumerate(rows):
+        try:
+            # local_* are true UTC; copy_rates_range wants broker-frame datetimes. The
+            # per-row offset is recoverable as (local_time - time), so no global assumption.
+            offset = (close_utc or 0) - (broker_close or 0)
+            broker_open = (open_utc or 0) - offset
+            frm = datetime.utcfromtimestamp(max(0, broker_open - 60))
+            to = datetime.utcfromtimestamp((broker_close or 0) + 60)
+
+            with mt5_lock:
+                if not (mt5.initialize(path=inst_path) if inst_path else mt5.initialize()):
+                    failed += 1
+                    continue
+                mt5.symbol_select(symbol, True)
+                rates = mt5.copy_rates_range(symbol, mt5.TIMEFRAME_M1, frm, to)
+                if rates is None or len(rates) == 0:
+                    failed += 1
+                    progress(done=i + 1, filled=filled, failed=failed)
+                    continue
+
+                worst_price = min(r['low'] for r in rates)
+                best_price = max(r['high'] for r in rates)
+                if direction == 1:      # short: price going up is adverse
+                    worst_price, best_price = best_price, worst_price
+
+                order_type = mt5.ORDER_TYPE_BUY if direction == 0 else mt5.ORDER_TYPE_SELL
+                mae = mt5.order_calc_profit(order_type, symbol, volume, entry_price, worst_price)
+                mfe = mt5.order_calc_profit(order_type, symbol, volume, entry_price, best_price)
+
+            if mae is None or mfe is None:
+                failed += 1
+            else:
+                # Excursions are one-sided by definition: the worst point can never be a
+                # profit, the best can never be a loss, whatever rounding says.
+                c.execute(
+                    "UPDATE trading_log SET mae_usd = ?, mfe_usd = ? WHERE instance_id = ? AND position_id = ?",
+                    (min(0.0, mae), max(0.0, mfe), inst_id, pid)
+                )
+                filled += 1
+        except Exception as e:
+            logging.error(f"MAE/MFE backfill failed for position {pid}: {e}")
+            failed += 1
+
+        if (i + 1) % 25 == 0:
+            conn.commit()
+        progress(done=i + 1, filled=filled, failed=failed)
+
+    conn.commit()
+    conn.close()
+    progress(status='IDLE', message=f'Filled {filled}, failed {failed}')
+    logging.info(f"MAE/MFE backfill for instance {inst_id}: filled {filled}, failed {failed}")
+    return {"total": len(rows), "filled": filled, "failed": failed}
+
+
+@flask_app.route('/api/journal/<int:inst_id>/backfill_mae', methods=['POST'])
+def api_journal_backfill_mae(inst_id):
+    with mae_backfill_lock:
+        if mae_backfill_state.get(inst_id, {}).get('status') == 'RUNNING':
+            return jsonify({"status": "ALREADY_RUNNING", **mae_backfill_state[inst_id]})
+
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    row = c.execute("SELECT path FROM instances WHERE id = ?", (inst_id,)).fetchone()
+    conn.close()
+    if row is None:
+        return jsonify({"error": "instance not found"}), 404
+
+    limit = request.args.get('limit', type=int)
+    threading.Thread(
+        target=_backfill_mae_mfe, args=(inst_id, row[0], limit), daemon=True
+    ).start()
+    return jsonify({"status": "STARTED"})
+
+
+@flask_app.route('/api/journal/<int:inst_id>/backfill_status', methods=['GET'])
+def api_journal_backfill_status(inst_id):
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    pending = c.execute(
+        "SELECT COUNT(*) FROM trading_log WHERE instance_id = ? AND mae_usd IS NULL "
+        "AND position_id IS NOT NULL AND entry_price > 0", (inst_id,)
+    ).fetchone()[0]
+    filled = c.execute(
+        "SELECT COUNT(*) FROM trading_log WHERE instance_id = ? AND mae_usd IS NOT NULL",
+        (inst_id,)
+    ).fetchone()[0]
+    conn.close()
+    with mae_backfill_lock:
+        state = dict(mae_backfill_state.get(inst_id, {"status": "IDLE"}))
+    return jsonify({**state, "pending": pending, "filled": filled})
+
+
+@flask_app.route('/api/journal/<int:inst_id>/distribution', methods=['GET'])
+def api_journal_distribution(inst_id):
+    """R-multiple histogram plus profit-concentration stats and the MAE/MFE edge ratio."""
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    if _journal_instance(c, inst_id) is None:
+        conn.close()
+        return jsonify({"error": "instance not found"}), 404
+
+    ts_from, ts_to, days = _journal_window(request.args, c)
+    trades = _fetch_journal_trades(c, inst_id, ts_from, ts_to, _journal_request_filters(request.args))
+    conn.close()
+
+    try:
+        bin_size = max(0.1, min(float(request.args.get('bin', 0.5)), 5.0))
+    except (TypeError, ValueError):
+        bin_size = 0.5
+
+    return jsonify({
+        "days": days,
+        **_r_distribution(trades, bin_size),
+        "edge": _edge_ratio(trades),
+    })
+
+
+@flask_app.route('/api/journal/<int:inst_id>/riskadjusted', methods=['GET'])
+def api_journal_riskadjusted(inst_id):
+    """Sharpe / Sortino / Calmar / Ulcer, plus the daily return series they came from."""
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    if _journal_instance(c, inst_id) is None:
+        conn.close()
+        return jsonify({"error": "instance not found"}), 404
+
+    ts_from, ts_to, days = _journal_window(request.args, c)
+    if ts_from is None:
+        ts_from = 0
+    cfg = _journal_day_config(c)
+    trades = _fetch_journal_trades(c, inst_id, ts_from, ts_to, _journal_request_filters(request.args))
+
+    balance = request.args.get('balance', type=float)
+    daily = _daily_return_series(c, inst_id, trades, ts_from, ts_to, balance, cfg)
+    conn.close()
+
+    metrics = _risk_adjusted_metrics(daily)
+    return jsonify({
+        "days": days,
+        # Named so nobody reads these as mark-to-market figures.
+        "basis": "realized balance (closed trades only; floating P&L is not included)",
+        "risk_free_rate": 0.0,
+        "anchored": daily is not None,
+        "metrics": metrics,
+        "series": daily["series"] if daily else [],
+    })
+
+
+@flask_app.route('/api/journal/<int:inst_id>/montecarlo', methods=['GET'])
+def api_journal_montecarlo(inst_id):
+    """Drawdown envelope from reshuffling the actual trade sequence."""
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    if _journal_instance(c, inst_id) is None:
+        conn.close()
+        return jsonify({"error": "instance not found"}), 404
+
+    ts_from, ts_to, days = _journal_window(request.args, c)
+    trades = _fetch_journal_trades(c, inst_id, ts_from, ts_to, _journal_request_filters(request.args))
+
+    balance = request.args.get('balance', type=float)
+    start_balance = None
+    if balance is not None:
+        after = c.execute(
+            "SELECT COALESCE(SUM(profit), 0) FROM trading_log "
+            "WHERE instance_id = ? AND COALESCE(local_time, time) >= ?",
+            (inst_id, ts_to)
+        ).fetchone()[0] or 0.0
+        start_balance = balance - after - sum(t['profit'] for t in trades)
+    conn.close()
+
+    iterations = request.args.get('iterations', default=5000, type=int)
+    # Seeded so the same window returns the same envelope across reloads -- a percentile
+    # that jitters every refresh is not something anyone can act on.
+    return jsonify({
+        "days": days,
+        **_monte_carlo_drawdown(trades, start_balance, iterations, seed=inst_id * 7919 + len(trades)),
+    })
+
+
+@flask_app.route('/api/journal/<int:inst_id>/summary', methods=['GET'])
+def api_journal_summary(inst_id):
+    """Headline metrics for the verdict bar.
+
+    Pass ?balance= (the instance's live balance, which the UI already has off the socket)
+    to get drawdown as a true percentage of the high-water mark rather than of cumulative
+    P&L -- see _drawdown_series.
+    """
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+
+    instance = _journal_instance(c, inst_id)
+    if instance is None:
+        conn.close()
+        return jsonify({"error": "instance not found"}), 404
+
+    ts_from, ts_to, days = _journal_window(request.args, c)
+    filters = _journal_request_filters(request.args)
+    trades = _fetch_journal_trades(c, inst_id, ts_from, ts_to, filters)
+
+    # Reconstruct the balance the window opened at, so drawdown % is measured against real
+    # account size. Everything closed after the window is subtracted back off the live
+    # balance, then the window's own P&L.
+    start_balance = None
+    balance_arg = request.args.get('balance')
+    if balance_arg:
+        try:
+            live_balance = float(balance_arg)
+            c.execute(
+                "SELECT COALESCE(SUM(profit), 0) FROM trading_log "
+                "WHERE instance_id = ? AND COALESCE(local_time, time) >= ?",
+                (inst_id, ts_to)
+            )
+            after_window = c.fetchone()[0] or 0.0
+            start_balance = live_balance - after_window - sum(t['profit'] for t in trades)
+        except (TypeError, ValueError):
+            start_balance = None
+
+    metrics = _journal_metrics(trades, start_balance)
+
+    # Every dollar figure gets a percentage twin, all against the same opening capital, so
+    # the numbers on this page can be compared and summed without conversion.
+    ref = _reference_balance(c, inst_id, ts_from, ts_to, balance_arg and float(balance_arg))
+    conn.close()
+
+    metrics["pct"] = {
+        "reference_balance": ref,
+        "net_pnl": _pct_of(metrics["net_pnl"], ref),
+        "gross_profit": _pct_of(metrics["gross_profit"], ref),
+        "gross_loss": _pct_of(metrics["gross_loss"], ref),
+        "expectancy": _pct_of(metrics["expectancy_usd"], ref),
+        "avg_win": _pct_of(metrics["avg_win"], ref),
+        "avg_loss": _pct_of(metrics["avg_loss"], ref),
+        "largest_win": _pct_of(metrics["largest_win"], ref),
+        "largest_loss": _pct_of(metrics["largest_loss"], ref),
+        "commission": _pct_of(metrics["commission_total"], ref),
+        "swap": _pct_of(metrics["swap_total"], ref),
+    }
+
+    return jsonify({
+        "instance": instance,
+        "days": days,
+        "start_balance": round(start_balance, 2) if start_balance is not None else None,
+        "reference_balance": ref,
+        "metrics": metrics,
+    })
+
+
+@flask_app.route('/api/journal/<int:inst_id>/equity', methods=['GET'])
+def api_journal_equity(inst_id):
+    """Per-trade equity curve plus the underwater (drawdown) series that shares its x-axis.
+
+    A bare equity curve hides drawdown depth and duration, which is the thing an algo
+    operator most needs to see -- so the two are always returned together.
+    """
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    if _journal_instance(c, inst_id) is None:
+        conn.close()
+        return jsonify({"error": "instance not found"}), 404
+
+    ts_from, ts_to, days = _journal_window(request.args, c)
+    cfg = _journal_day_config(c)
+    filters = _journal_request_filters(request.args)
+    trades = _fetch_journal_trades(c, inst_id, ts_from, ts_to, filters)
+
+    start_balance = None
+    balance_arg = request.args.get('balance')
+    if balance_arg:
+        try:
+            live_balance = float(balance_arg)
+            c.execute(
+                "SELECT COALESCE(SUM(profit), 0) FROM trading_log "
+                "WHERE instance_id = ? AND COALESCE(local_time, time) >= ?",
+                (inst_id, ts_to)
+            )
+            after_window = c.fetchone()[0] or 0.0
+            start_balance = live_balance - after_window - sum(t['profit'] for t in trades)
+        except (TypeError, ValueError):
+            start_balance = None
+
+    ref = _reference_balance(c, inst_id, ts_from, ts_to, balance_arg and float(balance_arg))
+
+    dd = _drawdown_series(trades, start_balance)
+    running = 0.0
+    for point, t in zip(dd["points"], trades):
+        point["label"] = _journal_dt(t['close_ts'], cfg).strftime('%Y-%m-%d %H:%M')
+        point["profit"] = round(t['profit'], 2)
+        # Cumulative return to this point, so the curve can be read in % as well as dollars.
+        running += t['profit']
+        point["cum_pct"] = _pct_of(running, ref)
+
+    conn.close()
+    return jsonify({
+        "days": days,
+        "start_balance": round(start_balance, 2) if start_balance is not None else None,
+        "reference_balance": ref,
+        "anchored": start_balance is not None,
+        **dd,
+    })
+
+
+@flask_app.route('/api/journal/<int:inst_id>/breakdown', methods=['GET'])
+def api_journal_breakdown(inst_id):
+    """Performance split by one dimension. ?by=magic|symbol|direction|hour|weekday|duration
+
+    Tables, not charts, on purpose: this is the view an algo operator scans to find which
+    EA or session is bleeding, and scanning is what tables are for.
+    """
+    by = request.args.get('by', 'magic')
+    valid = ('magic', 'symbol', 'direction', 'hour', 'weekday', 'duration')
+    if by not in valid:
+        return jsonify({"error": f"by must be one of {', '.join(valid)}"}), 400
+
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    if _journal_instance(c, inst_id) is None:
+        conn.close()
+        return jsonify({"error": "instance not found"}), 404
+
+    ts_from, ts_to, days = _journal_window(request.args, c)
+    cfg = _journal_day_config(c)
+    filters = _journal_request_filters(request.args)
+    trades = _fetch_journal_trades(c, inst_id, ts_from, ts_to, filters)
+    ref = _reference_balance(c, inst_id, ts_from, ts_to, request.args.get('balance', type=float))
+    conn.close()
+
+    def key_for(t):
+        if by == 'magic':
+            return t['magic'] if t['magic'] is not None else 0
+        if by == 'symbol':
+            return t['symbol'] or 'unknown'
+        if by == 'direction':
+            return t['side']
+        if by == 'hour':
+            return _journal_dt(t['close_ts'], cfg).hour
+        if by == 'weekday':
+            return _journal_dt(t['close_ts'], cfg).weekday()
+        return _duration_bucket(t['duration_sec'])
+
+    groups = {}
+    for t in trades:
+        groups.setdefault(key_for(t), []).append(t)
+
+    rows = []
+    for key, group in groups.items():
+        stats = _journal_group_stats(group)
+        # Against the window's opening capital, so these add up to the page total.
+        stats['net_pnl_pct'] = _pct_of(stats['net_pnl'], ref)
+        if by == 'weekday':
+            label = WEEKDAY_NAMES[key]
+        elif by == 'hour':
+            label = f"{key:02d}:00"
+        elif by == 'magic':
+            # The EA's own comment is the only human-readable hint we have until magic
+            # aliases land, so surface the most recent one.
+            label = str(key)
+            stats['hint'] = group[-1]['comment'] or ''
+        else:
+            label = str(key)
+        rows.append({"key": key, "label": label, **stats})
+
+    if by in ('hour', 'weekday'):
+        rows.sort(key=lambda r: r['key'])
+    elif by == 'duration':
+        order = [lbl for _, lbl in DURATION_BUCKETS] + ["unknown"]
+        rows.sort(key=lambda r: order.index(r['key']) if r['key'] in order else 99)
+    else:
+        rows.sort(key=lambda r: r['net_pnl'])
+
+    return jsonify({"by": by, "days": days, "reference_balance": ref, "rows": rows})
+
+
+@flask_app.route('/api/journal/<int:inst_id>/calendar', methods=['GET'])
+def api_journal_calendar(inst_id):
+    """Daily P&L keyed by journal day, for the month-grid heatmap."""
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    if _journal_instance(c, inst_id) is None:
+        conn.close()
+        return jsonify({"error": "instance not found"}), 404
+
+    ts_from, ts_to, days = _journal_window(request.args, c)
+    cfg = _journal_day_config(c)
+    filters = _journal_request_filters(request.args)
+    trades = _fetch_journal_trades(c, inst_id, ts_from, ts_to, filters)
+    ref = _reference_balance(c, inst_id, ts_from, ts_to, request.args.get('balance', type=float))
+    conn.close()
+
+    by_day = {}
+    for t in trades:
+        day = _journal_date_str(t['close_ts'], cfg)
+        d = by_day.setdefault(day, {"date": day, "profit": 0.0, "trades": 0, "wins": 0, "losses": 0})
+        d["profit"] += t['profit']
+        d["trades"] += 1
+        if t['profit'] > 0:
+            d["wins"] += 1
+        elif t['profit'] < 0:
+            d["losses"] += 1
+
+    out = []
+    for d in sorted(by_day.values(), key=lambda x: x["date"]):
+        decided = d["wins"] + d["losses"]
+        out.append({
+            **d,
+            "profit": round(d["profit"], 2),
+            "profit_pct": _pct_of(d["profit"], ref),
+            "win_rate": round(d["wins"] / decided * 100.0, 1) if decided else None,
+        })
+
+    best = max(out, key=lambda d: d["profit"], default=None)
+    worst = min(out, key=lambda d: d["profit"], default=None)
+    return jsonify({
+        "days": days,
+        "anchor": cfg["anchor"],
+        "reference_balance": ref,
+        "entries": out,
+        "best_day": best,
+        "worst_day": worst,
+        "active_days": len(out),
+    })
+
+
+@flask_app.route('/api/journal/<int:inst_id>/trades', methods=['GET'])
+def api_journal_trades(inst_id):
+    """The trade log itself. Newest first, paginated, honouring every page filter."""
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    if _journal_instance(c, inst_id) is None:
+        conn.close()
+        return jsonify({"error": "instance not found"}), 404
+
+    ts_from, ts_to, days = _journal_window(request.args, c)
+    cfg = _journal_day_config(c)
+    filters = _journal_request_filters(request.args)
+    trades = _fetch_journal_trades(c, inst_id, ts_from, ts_to, filters)
+    ref = _reference_balance(c, inst_id, ts_from, ts_to, request.args.get('balance', type=float))
+    conn.close()
+
+    # A single-day filter (from clicking a calendar cell) is applied here because the day a
+    # trade belongs to is a journal-frame question, not a SQL one.
+    day = request.args.get('date')
+    if day:
+        trades = [t for t in trades if _journal_date_str(t['close_ts'], cfg) == day]
+
+    try:
+        limit = max(1, min(int(request.args.get('limit', 200)), 2000))
+        offset = max(0, int(request.args.get('offset', 0)))
+    except (TypeError, ValueError):
+        limit, offset = 200, 0
+
+    trades.reverse()   # newest first for display
+    total = len(trades)
+    page = trades[offset:offset + limit]
+    for t in page:
+        t["date"] = _journal_date_str(t['close_ts'], cfg)
+        t["close_label"] = _journal_dt(t['close_ts'], cfg).strftime('%Y-%m-%d %H:%M:%S')
+        t["open_label"] = (
+            _journal_dt(t['open_ts'], cfg).strftime('%Y-%m-%d %H:%M:%S') if t['open_ts'] else None
+        )
+        t["profit_pct"] = _pct_of(t['profit'], ref)
+        t["risk_pct"] = _pct_of(t['entry_risk_usd'], ref) if t['entry_risk_usd'] else None
+
+    return jsonify({
+        "days": days, "total": total, "offset": offset, "limit": limit,
+        "reference_balance": ref, "trades": page,
+    })
+
+
+@flask_app.route('/api/journal/<int:inst_id>/annotation', methods=['POST'])
+def api_journal_annotation(inst_id):
+    """Upsert a tag/grade/note for one trade, keyed on (instance_id, position_id)."""
+    data = request.json or {}
+    position_id = data.get('position_id')
+    if position_id is None:
+        return jsonify({"error": "position_id is required"}), 400
+
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    c.execute('''
+        INSERT OR REPLACE INTO trade_annotations
+            (instance_id, position_id, tags, grade, note, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (
+        inst_id, int(position_id),
+        str(data.get('tags', ''))[:500],
+        str(data.get('grade', ''))[:8],
+        str(data.get('note', ''))[:4000],
+        int(time.time()),
+    ))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+
+@flask_app.route('/api/journal/<int:inst_id>/filters', methods=['GET'])
+def api_journal_filters(inst_id):
+    """Distinct symbols and magic numbers present, to populate the filter controls."""
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    ts_from, ts_to, days = _journal_window(request.args, c)
+
+    sql = "SELECT DISTINCT symbol, magic FROM trading_log WHERE instance_id = ?"
+    params = [inst_id]
+    if ts_from is not None:
+        sql += " AND COALESCE(local_time, time) >= ?"
+        params.append(ts_from)
+    rows = c.execute(sql, params).fetchall()
+    conn.close()
+
+    return jsonify({
+        "symbols": sorted({r[0] for r in rows if r[0]}),
+        "magics": sorted({r[1] for r in rows if r[1] is not None}),
+        "days": days,
+    })
 
 
 @flask_app.route('/signal_alert.wav')
@@ -2740,10 +4538,13 @@ def serve_react(path):
     if path.startswith('api/'):
         return "Not found", 404
         
-    full_path = os.path.join(flask_app.static_folder, path)
-    if path != "" and os.path.exists(full_path):
-        return send_from_directory(flask_app.static_folder, path)
-        
+    # Serve real files from the build root (favicon.svg and friends); anything else is a
+    # client-side route and must get index.html so React Router can resolve it.
+    full_path = os.path.join(frontend_dist, path)
+    if path != "" and os.path.isfile(full_path):
+        return send_from_directory(frontend_dist, path)
+
+
     try:
         return render_template('index.html')
     except Exception as e:

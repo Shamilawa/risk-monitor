@@ -4,6 +4,7 @@ import Dashboard from './components/Dashboard';
 import Copier from './components/Copier';
 import Settings from './components/Settings';
 import PortfolioManagement from './components/PortfolioManagement';
+import Journal from './components/journal/Journal';
 import { CommandBar } from './components/shell/CommandBar';
 import { Sidebar } from './components/shell/Sidebar';
 import { StatusLine } from './components/shell/StatusLine';
@@ -52,6 +53,7 @@ function Shell() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/copier" element={<Copier />} />
             <Route path="/portfolio" element={<PortfolioManagement />} />
+            <Route path="/portfolio/:id" element={<Journal />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
