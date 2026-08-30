@@ -500,6 +500,19 @@ def init_db():
         )
     ''')
 
+    # Cloud sync status, surfaced on the Settings "Cloud Sync" panel -- covers both the
+    # daily Task Scheduler run and the manual "Sync Now" button, which share cloud_sync.py's
+    # sync_to_cloud() and both write these same three columns.
+    try:
+        c.execute("ALTER TABLE global_settings ADD COLUMN last_cloud_sync_at INTEGER")
+    except sqlite3.OperationalError: pass
+    try:
+        c.execute("ALTER TABLE global_settings ADD COLUMN last_cloud_sync_status TEXT")
+    except sqlite3.OperationalError: pass
+    try:
+        c.execute("ALTER TABLE global_settings ADD COLUMN last_cloud_sync_message TEXT")
+    except sqlite3.OperationalError: pass
+
     conn.commit()
     conn.close()
 

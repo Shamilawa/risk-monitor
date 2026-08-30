@@ -42,10 +42,22 @@ $tmp = Join-Path $env:TEMP "mt5_bridge_release_$(Get-Random)"
 Expand-Archive -Path $ZipPath -DestinationPath $tmp -Force
 
 Write-Host "==> Updating backend files..."
-foreach ($f in @("app_server.py", "mt5_worker.py", "news_calendar.py", "signal_alert.wav", "requirements.txt")) {
+foreach ($f in @("app_server.py", "mt5_worker.py", "news_calendar.py", "cloud_sync.py", "signal_alert.wav", "requirements.txt")) {
     $src = Join-Path $tmp $f
     if (Test-Path $src) {
         Copy-Item $src -Destination (Join-Path $root $f) -Force
+    }
+}
+
+# Self-update: this script and its companion never copy themselves, so without this
+# the VPS keeps running whatever version of apply_release.ps1/check_open_positions.py
+# happened to be on disk before -- silently ignoring new files added to the backend
+# list above by a newer release (this is exactly how cloud_sync.py got missed once).
+Write-Host "==> Updating deploy scripts for next time..."
+foreach ($f in @("apply_release.ps1", "check_open_positions.py")) {
+    $src = Join-Path $tmp $f
+    if (Test-Path $src) {
+        Copy-Item $src -Destination (Join-Path $deployDir $f) -Force
     }
 }
 
