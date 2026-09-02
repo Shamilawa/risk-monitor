@@ -8,7 +8,8 @@ account state twice a second, mirroring trades between accounts over ZeroMQ,
 enforcing prop-firm news-blackout rules, and alerting a human on Telegram the
 moment anything drifts from expected.
 
-Full technical write-up: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
+**[Getting Started guide](docs/GETTING_STARTED.md)** — install to first alert,
+step by step. Full technical write-up: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 (12 diagrams — process topology, thread model, data flows, schemas, failure
 modes). Companion project: **[risk-monitor-cloud](https://github.com/Shamilawa/risk-monitor-cloud)**,
 a read-only analytics dashboard fed by a daily redacted snapshot of this app's
@@ -153,7 +154,14 @@ pip install -r requirements.txt
 python app_server.py     # serves http://127.0.0.1:5000, auto-opens the browser
 ```
 
-Full setup, configuration and deploy details in
+That gets the server running with an empty dashboard. For adding your first
+MT5 instance, setting alert thresholds, wiring up Telegram, configuring the
+trade copier, and running unattended on a VPS, follow the
+**[Getting Started guide](docs/GETTING_STARTED.md)** — it walks through all
+of it step by step, plus a troubleshooting table for the usual first-run
+snags (algo trading disabled, invalid volume, silent Telegram, etc.).
+
+Configuration reference and deploy internals:
 **[docs/ARCHITECTURE.md § Configuration reference](docs/ARCHITECTURE.md#18-configuration-reference)**
 and **[§ Build & deployment pipeline](docs/ARCHITECTURE.md#19-build--deployment-pipeline)**.
 
