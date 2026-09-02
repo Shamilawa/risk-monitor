@@ -19,12 +19,17 @@ import webbrowser
 import concurrent.futures
 from datetime import datetime, timedelta, timezone
 import news_calendar
+import issue_log
+import copier_monitor
 
 load_dotenv()
 
 # --- GLOBALS & STATE ---
 clients = []
 global_mt5_status = '{"online": false, "text": "Checking..."}'
+# Latest poller snapshot, reused by reconciler_thread so reconciliation costs
+# no extra MT5 round-trips.
+global_risk_payload = '[]'
 
 recent_logs = []
 mt5_history_cache = {}
@@ -513,6 +518,10 @@ def init_db():
         c.execute("ALTER TABLE global_settings ADD COLUMN last_cloud_sync_message TEXT")
     except sqlite3.OperationalError: pass
 
+    # Copier signal ledger, per-consumer execution outcomes, and the incident
+    # table behind the reconciler's alerts. See copier_monitor.py.
+    copier_monitor.init_schema(c)
+
     conn.commit()
     conn.close()
 
@@ -744,7 +753,13 @@ def fetch_instance_data(inst):
                         "tp": p.tp,
                         "profit": p.profit,
                         "risk_usd": risk_usd,
-                        "dist_sl": dist_sl
+                        "dist_sl": dist_sl,
+                        # magic tells the reconciler which positions the copier
+                        # opened (vs manual/other-EA trades it must not police);
+                        # open_time backs the heuristic match when a ticket map
+                        # is stale. Both are read by copier_monitor.reconcile().
+                        "magic": p.magic,
+                        "open_time": p.time,
                     })
                     
             current_time = time.time()
@@ -1093,8 +1108,10 @@ def poller_thread():
                 notify_clients("mt5_status", status_data)
                 
             if instances:
-                notify_clients("risk_data", json.dumps(risk_payload))
-                
+                global global_risk_payload
+                global_risk_payload = json.dumps(risk_payload)
+                notify_clients("risk_data", global_risk_payload)
+
                 global last_summary_date
                 current_date_str = datetime.utcnow().strftime("%Y-%m-%d")
                 online_ids = set()
@@ -1270,9 +1287,17 @@ def poller_thread():
                         connection_fail_count[inst_id] = connection_fail_count.get(inst_id, 0) + 1
                         if connection_fail_count[inst_id] == 240:
                             send_telegram_message(f"🔌 Connection Issue: {inst_name} has been offline for 2 minutes.")
+                            issue_log.log_issue(
+                                'CRITICAL', 'CONNECTION', 'INSTANCE_OFFLINE', inst_name, inst_id,
+                                details={'cause': 'no response from the terminal for 2 minutes',
+                                         'action': 'nothing is being polled or copied for this instance'},
+                                fingerprint=f'INSTANCE_OFFLINE:{inst_name}',
+                            )
                     else:
                         if connection_fail_count.get(inst_id, 0) >= 240:
                             send_telegram_message(f"✅ Connection Restored: {inst_name} is back online.")
+                            issue_log.log_resolution('INSTANCE_OFFLINE', inst_name, inst_id,
+                                                     details={'via': 'terminal reconnected'})
                         connection_fail_count[inst_id] = 0
                         
                 if last_summary_date and last_summary_date != current_date_str:
@@ -4203,6 +4228,24 @@ def telegram_listener_thread():
                         telegram_edit_message(message_id, "🔒 Armed — will auto-close the moment the target is hit.")
                     else:
                         telegram_answer_callback(callback_id, "This alert has expired or was already handled.")
+                elif len(parts) == 3 and parts[0] == "cop":
+                    # RETRY / CLOSE NOW / IGNORE on a copier incident.
+                    action = parts[1]
+                    try:
+                        incident_id = int(parts[2])
+                    except ValueError:
+                        telegram_answer_callback(callback_id, "Invalid request")
+                        continue
+                    conn2 = sqlite3.connect('trades.db')
+                    try:
+                        result_msg = copier_monitor.handle_action(conn2, action, incident_id)
+                    except Exception as e:
+                        logging.error(f"Copier incident action failed: {e}")
+                        result_msg = f"Failed: {e}"
+                    finally:
+                        conn2.close()
+                    telegram_answer_callback(callback_id, result_msg)
+                    telegram_edit_message(message_id, f"{cq.get('message', {}).get('text', '')}\n\n➡️ {result_msg}")
                 else:
                     telegram_answer_callback(callback_id, "Unknown action")
 
@@ -4216,7 +4259,164 @@ def telegram_listener_thread():
             logging.error(f"Telegram listener error: {e}")
             time.sleep(2)
 
+# --- COPIER RECONCILER & LEDGER -------------------------------------------
+# The copier used to be fire-and-forget: a rejected or undelivered copy only
+# ever reached a print() inside a worker subprocess, so a consumer silently
+# missing trades looked exactly like a quiet week. These routes collect what
+# each consumer actually did, and reconciler_thread independently compares the
+# provider's live positions against every consumer's. See copier_monitor.py.
+
+@flask_app.route('/api/copier/signal', methods=['POST'])
+def api_copier_signal():
+    """Provider worker announcing a signal it just pushed onto the bus."""
+    payload = request.get_json(silent=True) or {}
+    conn = sqlite3.connect('trades.db')
+    try:
+        copier_monitor.record_signal(conn, payload)
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
+
+
+@flask_app.route('/api/copier/execution', methods=['POST'])
+def api_copier_execution():
+    """Consumer worker reporting the outcome of one signal: FILLED, REJECTED
+    or SKIPPED. REJECTED raises a CRITICAL incident immediately."""
+    payload = request.get_json(silent=True) or {}
+    conn = sqlite3.connect('trades.db')
+    try:
+        copier_monitor.record_execution(conn, payload)
+    except Exception as e:
+        logging.error(f"Failed to record copier execution: {e}")
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
+
+
+@flask_app.route('/api/copier/signals', methods=['GET'])
+def api_copier_signals():
+    """Signals a restarting consumer missed.
+
+    ZeroMQ PUB silently drops messages to a subscriber that isn't connected
+    yet, and copier_manager_thread respawns a worker on any config edit -- so
+    an edit made while the master was entering a trade lost that trade on that
+    consumer alone. The worker calls this on startup to catch up.
+    """
+    try:
+        consumer_id = int(request.args.get('consumer_id', 0))
+        since = int(request.args.get('since', 0))
+    except (TypeError, ValueError):
+        return jsonify({"signals": []})
+
+    conn = sqlite3.connect('trades.db')
+    c = conn.cursor()
+    c.execute(
+        """SELECT s.signal_id, s.type, s.symbol, s.action, s.volume, s.price, s.sl, s.tp,
+                  s.provider_ticket, s.sent_at
+           FROM copier_signals s
+           WHERE s.sent_at >= ?
+             AND NOT EXISTS (SELECT 1 FROM copier_executions e
+                             WHERE e.signal_id = s.signal_id AND e.consumer_id = ?)
+           ORDER BY s.sent_at ASC""",
+        (since, consumer_id)
+    )
+    signals = [{
+        "signal_id": r[0], "type": r[1], "symbol": r[2], "action": r[3],
+        "volume": r[4], "price": r[5], "sl": r[6], "tp": r[7],
+        "provider_ticket": r[8], "sent_at": r[9], "replayed": True,
+    } for r in c.fetchall()]
+    conn.close()
+    return jsonify({"signals": signals})
+
+
+@flask_app.route('/api/copier/incidents', methods=['GET'])
+def api_copier_incidents():
+    conn = sqlite3.connect('trades.db')
+    try:
+        return jsonify({"incidents": copier_monitor.open_incidents(conn)})
+    finally:
+        conn.close()
+
+
+@flask_app.route('/api/copier/incidents/<int:incident_id>/<action>', methods=['POST'])
+def api_copier_incident_action(incident_id, action):
+    if action not in ('retry', 'close', 'ack'):
+        return jsonify({"error": "unknown action"}), 400
+    conn = sqlite3.connect('trades.db')
+    try:
+        msg = copier_monitor.handle_action(conn, action, incident_id)
+    finally:
+        conn.close()
+    return jsonify({"message": msg})
+
+
+@flask_app.route('/api/copier/issue_log', methods=['GET'])
+def api_copier_issue_log():
+    """Raw text of one day's issue file, for the UI and for quick inspection."""
+    date_str = request.args.get('date') or datetime.now().strftime('%Y-%m-%d')
+    path = os.path.join(basedir, 'logs', f'issues_{date_str}.txt')
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return Response(f.read(), mimetype='text/plain')
+    except FileNotFoundError:
+        return Response(f"No issues logged for {date_str}.\n", mimetype='text/plain')
+
+
+def reconciler_thread():
+    """Compares what the provider holds against what every consumer holds.
+
+    Deliberately independent of the worker reporting path: it needs no
+    cooperation from the workers, so it still catches a consumer that crashed,
+    lost its subscription, or never received a signal at all. Runs on the
+    poller's own snapshot, so it costs no extra MT5 calls.
+    """
+    last_local_date = datetime.now().strftime("%Y-%m-%d")
+    last_purge = 0
+
+    while True:
+        time.sleep(15)
+        try:
+            payload = json.loads(global_risk_payload or "[]")
+        except Exception:
+            payload = []
+
+        conn = sqlite3.connect('trades.db')
+        try:
+            if payload:
+                copier_monitor.reconcile(conn, payload)
+            copier_monitor.send_fanout_summaries(conn)
+            copier_monitor.send_warn_digest(conn)
+
+            # Day rollover on LOCAL dates: the issue log is a human artifact and
+            # "Tuesday" means the local one, unlike the UTC-keyed risk reports.
+            today = datetime.now().strftime("%Y-%m-%d")
+            if today != last_local_date:
+                copier_monitor.daily_rollover(conn, last_local_date)
+                last_local_date = today
+
+            if time.time() - last_purge > 3600:
+                copier_monitor.purge_old_rows(conn)
+                last_purge = time.time()
+        except Exception as e:
+            logging.error(f"Reconciler error: {e}")
+        finally:
+            conn.close()
+
+
 copier_workers = {}
+
+
+def _worker_log_tail(instance_id, lines=6):
+    """Last few lines of a worker's log, so a crash alert carries the actual
+    error rather than just the fact that something died."""
+    try:
+        path = os.path.join(basedir, 'logs', f'worker_{instance_id}.log')
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            tail = [ln.strip() for ln in f.readlines()[-lines:] if ln.strip()]
+        return " | ".join(tail)[:400] or None
+    except Exception:
+        return None
+
 
 def copier_manager_thread():
     import sys
@@ -4225,25 +4425,54 @@ def copier_manager_thread():
             conn = sqlite3.connect('trades.db')
             c = conn.cursor()
             try:
-                c.execute("SELECT id, path, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, symbol_mapping, account_type, news_block_before_min, news_block_after_min, trade_locked FROM instances WHERE copier_role IN ('PROVIDER', 'CONSUMER')")
+                # `name` is appended last so every existing positional index below stays valid.
+                c.execute("SELECT id, path, copier_role, copier_risk_type, copier_fixed_lot, copier_risk_usd, copier_risk_multiplier, symbol_mapping, account_type, news_block_before_min, news_block_after_min, trade_locked, name FROM instances WHERE copier_role IN ('PROVIDER', 'CONSUMER')")
                 active_copiers = c.fetchall()
             except sqlite3.OperationalError:
                 active_copiers = []
             conn.close()
             
             desired = {r[0]: r for r in active_copiers}
-            
+
             to_remove = []
+            crashed = []
             for cid, w in copier_workers.items():
-                if cid not in desired or w['config'] != desired[cid] or w['process'].poll() is not None:
+                died = w['process'].poll() is not None
+                if cid not in desired or w['config'] != desired[cid] or died:
                     try:
                         w['process'].terminate()
                     except: pass
                     to_remove.append(cid)
-            
+                    # A worker that exits on its own is a crash, not a config
+                    # change: previously the manager just respawned it every 3s
+                    # forever while nothing was copied and nothing was said.
+                    if died and cid in desired:
+                        crashed.append(cid)
+                elif (copier_monitor.has_restart_history(cid)
+                      and time.time() - w.get('started_at', 0) > 300):
+                    conn2 = sqlite3.connect('trades.db')
+                    try:
+                        copier_monitor.report_worker_healthy(conn2, cid)
+                    finally:
+                        conn2.close()
+
             for cid in to_remove:
+                if cid in copier_workers:
+                    try:
+                        copier_workers[cid]['log'].close()
+                    except Exception: pass
                 del copier_workers[cid]
-                
+
+            for cid in crashed:
+                conn2 = sqlite3.connect('trades.db')
+                try:
+                    name = desired[cid][12] if len(desired[cid]) > 12 else f"Instance {cid}"
+                    copier_monitor.report_worker_restart(conn2, cid, name, _worker_log_tail(cid))
+                except Exception as e:
+                    logging.error(f"Worker restart report failed: {e}")
+                finally:
+                    conn2.close()
+
             for cid, r in desired.items():
                 if cid not in copier_workers:
                     cmd = [
@@ -4261,8 +4490,22 @@ def copier_manager_thread():
                         '--news_after_min', str(r[10] if len(r) > 10 and r[10] is not None else 2.0),
                         '--trade_locked', str(int(r[11]) if len(r) > 11 and r[11] else 0),
                     ]
-                    p = subprocess.Popen(cmd)
-                    copier_workers[cid] = {'process': p, 'config': r}
+                    # Capture the child's output to a file. Previously it was
+                    # inherited by the parent console and lost, so the only
+                    # record of a failed copy vanished with the window.
+                    log_path = os.path.join(basedir, 'logs', f'worker_{cid}.log')
+                    try:
+                        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+                        log_fh = open(log_path, 'a', encoding='utf-8', errors='replace')
+                        log_fh.write(f"\n--- worker start {datetime.now():%Y-%m-%d %H:%M:%S} role={r[2]} ---\n")
+                        log_fh.flush()
+                    except Exception:
+                        log_fh = None
+
+                    p = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT) if log_fh \
+                        else subprocess.Popen(cmd)
+                    copier_workers[cid] = {'process': p, 'config': r, 'log': log_fh,
+                                           'started_at': time.time()}
                     logging.info(f"Started MT5 Copier Worker [{r[2]}] for Instance {cid}")
                     
         except Exception as e:
@@ -4568,9 +4811,21 @@ def main():
     
     # DB Reconcile and Poller
     reconcile_on_boot()
+
+    # Hand copier_monitor the helpers it needs (injected rather than imported,
+    # so the module stays free of a circular dependency on this file).
+    copier_monitor.configure(
+        send_telegram=send_telegram_message,
+        send_telegram_buttons=send_telegram_message_with_buttons,
+        notify_clients=notify_clients,
+        execute_trade=execute_trade,
+        close_position=_close_position_by_ticket,
+    )
+
     threading.Thread(target=poller_thread, daemon=True).start()
     threading.Thread(target=zmq_router_thread, daemon=True).start()
     threading.Thread(target=copier_manager_thread, daemon=True).start()
+    threading.Thread(target=reconciler_thread, daemon=True).start()
     threading.Thread(target=news_calendar_thread, daemon=True).start()
     threading.Thread(target=telegram_listener_thread, daemon=True).start()
     threading.Thread(target=trading_log_sync_thread, daemon=True).start()

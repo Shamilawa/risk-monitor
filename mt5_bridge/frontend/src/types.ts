@@ -411,3 +411,19 @@ export interface PortfolioOverviewItem {
   daily_pnl: DailyPnlPoint[];
   risk: PortfolioRiskMetrics;
 }
+
+/** One open copier reconciliation incident (see mt5_bridge/copier_monitor.py). */
+export interface CopierIncident {
+  id: number;
+  type: string;
+  severity: 'CRITICAL' | 'WARN' | 'INFO';
+  instance_id: number;
+  instance_name: string;
+  signal_id: string | null;
+  provider_ticket: number | null;
+  fingerprint: string | null;
+  detail: Record<string, string>;
+  first_seen: number;
+  last_seen: number;
+  status: 'OPEN' | 'ACKED';
+}

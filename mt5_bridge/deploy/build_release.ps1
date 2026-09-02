@@ -33,6 +33,8 @@ $filesToCopy = @(
     "mt5_worker.py",
     "news_calendar.py",
     "cloud_sync.py",
+    "copier_monitor.py",
+    "issue_log.py",
     "signal_alert.wav",
     "requirements.txt"
 )

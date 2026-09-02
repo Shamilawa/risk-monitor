@@ -42,9 +42,18 @@ $tmp = Join-Path $env:TEMP "mt5_bridge_release_$(Get-Random)"
 Expand-Archive -Path $ZipPath -DestinationPath $tmp -Force
 
 Write-Host "==> Updating backend files..."
-foreach ($f in @("app_server.py", "mt5_worker.py", "news_calendar.py", "cloud_sync.py", "signal_alert.wav", "requirements.txt")) {
+# Every .py at the zip root is a backend module, plus the fixed assets below.
+# This used to be a hand-maintained list, which meant a release that ADDED a
+# module silently shipped without it -- and because this script self-updates
+# below, the stale copy on the VPS was always the one making that decision.
+# Globbing removes that whole class of failure.
+$deployOnly = @("apply_release.ps1", "check_open_positions.py")
+$backend = @(Get-ChildItem -Path $tmp -Filter *.py -File | Where-Object { $deployOnly -notcontains $_.Name } | Select-Object -ExpandProperty Name)
+$backend += @("signal_alert.wav", "requirements.txt")
+foreach ($f in $backend) {
     $src = Join-Path $tmp $f
     if (Test-Path $src) {
+        Write-Host "    $f"
         Copy-Item $src -Destination (Join-Path $root $f) -Force
     }
 }

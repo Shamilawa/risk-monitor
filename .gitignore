@@ -15,3 +15,7 @@ mt5_bridge/frontend/dist/
 # Deploy artifacts
 mt5_bridge/deploy/_stage/
 mt5_bridge/deploy/*.zip
+
+# Copier issue + worker logs (local forensics, never committed)
+mt5_bridge/logs/
+mt5_bridge/provider_state_*.json

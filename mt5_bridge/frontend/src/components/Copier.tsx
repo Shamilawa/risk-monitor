@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Instance } from '../types';
 import NewsPanel from './NewsPanel';
+import CopierHealth from './CopierHealth';
 import { Modal, Field, TermInput, TermSelect, TermButton, SectionLabel } from './ui/Terminal';
 
 const fetchInstances = async (): Promise<Instance[]> => {
@@ -349,6 +350,8 @@ const Copier = () => {
     <div style={{ padding: '10px', overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: '10px', height: '100%' }}>
 
       <NewsPanel />
+
+      <CopierHealth />
 
       {/* Grid Desk Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-toolbar)', border: '1px solid var(--border-color)', padding: '8px 12px', flexShrink: 0 }}>
