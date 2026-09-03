@@ -76,6 +76,33 @@ def build_sync_payload():
             ['instance_id', 'date', 'peak_drawdown_pct', 'max_risk_usd', 'no_sl_count'],
         )
 
+        # trade_history is the analytics source of record on both sides now -- the cloud
+        # dashboard and the weekly/monthly reports read it, not trading_log. It carries the
+        # open time in the broker's own clock as well as UTC, which trading_log cannot.
+        trade_history = _table_rows(
+            c, 'trade_history',
+            ['instance_id', 'position_id', 'ticket', 'symbol', 'direction', 'volume',
+             'open_time_server', 'close_time_server', 'open_time_utc', 'close_time_utc',
+             'broker_offset_sec', 'duration_sec', 'entry_price', 'exit_price',
+             'sl_at_open', 'tp_at_open', 'raw_profit', 'commission', 'swap', 'profit',
+             'entry_risk_usd', 'mae_usd', 'mfe_usd', 'magic', 'comment'],
+            order_by='instance_id ASC, close_time_utc ASC',
+        )
+
+        profit_lock_events = _table_rows(
+            c, 'profit_lock_events',
+            ['id', 'instance_id', 'date', 'crossed_at', 'target_pct', 'peak_pct',
+             'peak_floating_usd', 'start_equity', 'equity', 'balance', 'armed',
+             'ticket_count', 'status', 'resolved_at', 'realized_usd', 'verdict'],
+            order_by='crossed_at ASC',
+        )
+
+        profit_lock_event_tickets = _table_rows(
+            c, 'profit_lock_event_tickets',
+            ['event_id', 'instance_id', 'ticket', 'symbol', 'floating_usd_at_cross',
+             'realized_usd', 'closed_at'],
+        )
+
         # public_username/public_password_hash don't exist yet -- Settings' Cloud Sync
         # panel only ships the sync button in this phase. SELECTing a column that
         # doesn't exist raises OperationalError immediately (unlike a short row), so
@@ -105,6 +132,9 @@ def build_sync_payload():
         "trade_annotations": trade_annotations,
         "balance_operations": balance_operations,
         "risk_snapshots": risk_snapshots,
+        "trade_history": trade_history,
+        "profit_lock_events": profit_lock_events,
+        "profit_lock_event_tickets": profit_lock_event_tickets,
         "journal_config": journal_config,
         "auth": auth,
     }
@@ -159,10 +189,54 @@ def sync_to_cloud():
         return False, message
 
     row_counts = {k: len(payload[k]) for k in
-                  ('instances', 'trading_log', 'trade_annotations', 'balance_operations', 'risk_snapshots')}
-    message = f"Synced {row_counts['trading_log']} trades across {row_counts['instances']} instance(s)"
+                  ('instances', 'trading_log', 'trade_annotations', 'balance_operations',
+                   'risk_snapshots', 'trade_history', 'profit_lock_events',
+                   'profit_lock_event_tickets')}
+    message = (f"Synced {row_counts['trade_history']} trades across "
+               f"{row_counts['instances']} instance(s)")
     _record_sync_result('success', message)
     return True, message
+
+
+def generate_cloud_report(period, period_start, period_end):
+    """Ask the cloud to build and freeze one weekly/monthly report.
+
+    Called *after* a successful sync_to_cloud(), never on its own schedule. A cloud-side
+    cron firing independently would sometimes build Saturday's report from Friday's data
+    and be silently wrong; driving it from here makes the ordering structural.
+
+    Returns (ok, url_or_message).
+    """
+    if not CLOUD_SYNC_URL or not CLOUD_SYNC_SECRET:
+        return False, "cloud sync not configured"
+
+    base = CLOUD_SYNC_URL.rsplit('/api/sync', 1)[0]
+    try:
+        resp = requests.post(
+            f"{base}/api/reports/generate",
+            headers={
+                "Authorization": f"Bearer {CLOUD_SYNC_SECRET}",
+                "Content-Type": "application/json",
+            },
+            data=json.dumps({
+                "period": period,
+                "period_start": period_start,
+                "period_end": period_end,
+            }),
+            timeout=60,
+        )
+    except requests.RequestException as e:
+        return False, f"report request failed: {e}"
+
+    if resp.status_code != 200:
+        return False, f"report endpoint returned {resp.status_code}: {resp.text[:300]}"
+
+    try:
+        report_id = resp.json().get("id")
+    except ValueError:
+        return False, "report endpoint returned a non-JSON body"
+
+    return True, f"{base}/reports/{report_id}"
 
 
 if __name__ == '__main__':

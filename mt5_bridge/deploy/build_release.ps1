@@ -35,6 +35,7 @@ $filesToCopy = @(
     "cloud_sync.py",
     "copier_monitor.py",
     "issue_log.py",
+    "profit_lock.py",
     "signal_alert.wav",
     "requirements.txt"
 )
@@ -43,7 +44,10 @@ foreach ($f in $filesToCopy) {
     if (Test-Path $src) {
         Copy-Item $src -Destination $stage
     } else {
-        Write-Warning "Skipping missing file: $f"
+        # Hard failure, not a warning. Every file in this list is required for the app
+        # to start, so "skipping" one just moves the breakage to the VPS at startup --
+        # which is how cloud_sync.py got missed once already (see apply_release.ps1).
+        throw "Required release file missing: $f"
     }
 }
 

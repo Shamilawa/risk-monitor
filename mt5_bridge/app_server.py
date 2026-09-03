@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 import news_calendar
 import issue_log
 import copier_monitor
+import profit_lock
 
 load_dotenv()
 
@@ -518,6 +519,106 @@ def init_db():
         c.execute("ALTER TABLE global_settings ADD COLUMN last_cloud_sync_message TEXT")
     except sqlite3.OperationalError: pass
 
+    # --- trade_history: the analytics table -------------------------------------------
+    # Deliberately separate from trading_log. trading_log is load-bearing for *live*
+    # behaviour (the profit-limit kill check, risk stats, the journal's annotations) and
+    # sync_trading_log(full=True) deletes its rows per instance wholesale -- an analytics
+    # table must never be exposed to that. This one is append/upsert only; nothing ever
+    # bulk-deletes it, so the analysis record survives any trading_log rebuild.
+    #
+    # It also records what trading_log cannot: the *raw broker-server* open time. The old
+    # table keeps `time` (server close) and the offset-corrected local_* pair, but the entry
+    # deal's own .time is discarded, making "when did this open, on the broker's clock"
+    # unrecoverable. Here both ends are stored in both frames, plus the offset relating them.
+    #
+    # broker_offset_sec is per row on purpose: it is derived from a live tick at sync time,
+    # so one global value applied across years of history misdates every trade on the far
+    # side of each of the broker's DST changes. Per row, an old trade keeps the offset that
+    # was actually in force when it closed.
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS trade_history (
+            instance_id       INTEGER NOT NULL,
+            position_id       INTEGER NOT NULL,
+            ticket            INTEGER,
+            symbol            TEXT,
+            direction         INTEGER,
+            volume            REAL,
+
+            open_time_server  INTEGER,
+            close_time_server INTEGER,
+            open_time_utc     INTEGER,
+            close_time_utc    INTEGER,
+            broker_offset_sec INTEGER,
+            duration_sec      INTEGER,
+
+            entry_price REAL, exit_price REAL,
+            sl_at_open  REAL, tp_at_open REAL,
+            raw_profit  REAL, commission REAL, swap REAL, profit REAL,
+            entry_risk_usd REAL, mae_usd REAL, mfe_usd REAL,
+            magic INTEGER, comment TEXT,
+            first_seen_at INTEGER,
+            PRIMARY KEY (instance_id, position_id)
+        )
+    ''')
+    c.execute("CREATE INDEX IF NOT EXISTS idx_trade_history_close ON trade_history (instance_id, close_time_utc)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_trade_history_symbol ON trade_history (instance_id, symbol)")
+
+    # --- Profit-lock decision ledger ---------------------------------------------------
+    # One row per moment an instance's unrealized P&L actually *crossed* its profit-lock
+    # target. Only crossings count: an alert that fired at the 75% pre-alert level and then
+    # faded never had money on the table, because ARM would never have triggered.
+    #
+    # peak_floating_usd is the benchmark -- exactly what an armed auto-close would have
+    # banked at that instant -- and realized_usd is what the same set of trades actually
+    # went on to make. The difference is the profit left on the table.
+    #
+    # armed=1 rows are the control group: they make the weekly "armed keeps 100% of peak,
+    # unarmed keeps N%" comparison possible, which is the only thing that turns this from a
+    # list of regrets into an answerable question.
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS profit_lock_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instance_id       INTEGER NOT NULL,
+            date              TEXT,
+            crossed_at        INTEGER,
+            target_pct        REAL,
+            peak_pct          REAL,
+            peak_floating_usd REAL,
+            start_equity      REAL,
+            equity            REAL,
+            balance           REAL,
+            armed             INTEGER DEFAULT 0,
+            ticket_count      INTEGER DEFAULT 0,
+            status            TEXT DEFAULT 'OPEN',
+            resolved_at       INTEGER,
+            realized_usd      REAL,
+            verdict           TEXT
+        )
+    ''')
+    c.execute("CREATE INDEX IF NOT EXISTS idx_profit_lock_open ON profit_lock_events (status, instance_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_profit_lock_crossed ON profit_lock_events (crossed_at)")
+
+    # The cluster: the exact positions open at the instant of the crossing. It never grows --
+    # trades opened afterwards are a separate decision and would otherwise pollute the
+    # measurement.
+    #
+    # NOTE ON `ticket`: this is the *position* identifier taken from the live poller, which is
+    # what MT5 exposes for an open position. It is NOT trading_log.ticket (the last OUT deal).
+    # Resolution therefore joins ticket -> trade_history.position_id; joining on ticket would
+    # match nothing and leave every event OPEN forever.
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS profit_lock_event_tickets (
+            event_id              INTEGER NOT NULL,
+            instance_id           INTEGER NOT NULL,
+            ticket                INTEGER NOT NULL,
+            symbol                TEXT,
+            floating_usd_at_cross REAL,
+            realized_usd          REAL,
+            closed_at             INTEGER,
+            PRIMARY KEY (event_id, ticket)
+        )
+    ''')
+
     # Copier signal ledger, per-consumer execution outcomes, and the incident
     # table behind the reconciler's alerts. See copier_monitor.py.
     copier_monitor.init_schema(c)
@@ -818,6 +919,7 @@ last_summary_date = ""
 # re-evaluates fresh, rather than risking a stale ARM firing an unattended close.
 profit_lock_state = {}
 profit_lock_lock = threading.Lock()
+last_profit_lock_resolve = 0.0
 
 
 def _journal_day_config(c):
@@ -1063,6 +1165,42 @@ def build_risk_report(period, risk_payload, c, date_from, date_to, ts_from=None,
     return "\n".join(lines)
 
 
+def publish_period_report(period, date_from, date_to):
+    """Push the latest data to the cloud, have it freeze a report, then ping Telegram.
+
+    Runs on its own thread. sync_to_cloud() can take tens of seconds and the caller is the
+    poller, which emits risk_data twice a second and evaluates every drawdown/profit alert
+    -- blocking it on a network round-trip would stall the live UI and delay alerts. The
+    copier is unaffected either way: it runs in separate processes and never touches this
+    thread or trades.db.
+
+    Ordering is the whole point of doing it here rather than on a cloud cron: the report can
+    only be correct if the period's data has already landed, so sync strictly precedes
+    generation, and the notification strictly follows both.
+    """
+    def _run():
+        try:
+            import cloud_sync
+            ok, message = cloud_sync.sync_to_cloud()
+            if not ok:
+                send_telegram_message(
+                    f"⚠️ {period.capitalize()} report not generated — cloud sync failed: {message}"
+                )
+                return
+
+            ok, result = cloud_sync.generate_cloud_report(period, date_from, date_to)
+            if ok:
+                label = "Weekly" if period == "weekly" else "Monthly"
+                send_telegram_message(f"📄 {label} report ready ({date_from} → {date_to}) — {result}")
+            else:
+                send_telegram_message(f"⚠️ {period.capitalize()} report generation failed: {result}")
+        except Exception as e:
+            logging.error(f"publish_period_report({period}) failed: {e}")
+            send_telegram_message(f"⚠️ {period.capitalize()} report failed: {e}")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def poller_thread():
     global global_mt5_status
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
@@ -1115,6 +1253,10 @@ def poller_thread():
                 global last_summary_date
                 current_date_str = datetime.utcnow().strftime("%Y-%m-%d")
                 online_ids = set()
+                # Only instances actually seen in this poll. active_positions_cache keeps
+                # stale entries for offline terminals, and grading a cluster against a
+                # terminal we couldn't reach would read "no open tickets" as "all closed".
+                live_tickets_by_instance = {}
 
                 c.execute("SELECT auto_close_enabled FROM global_settings WHERE id = 1")
                 auto_close_row = c.fetchone()
@@ -1131,6 +1273,7 @@ def poller_thread():
                     current_tickets = set(p["ticket"] for p in r.get("positions", []))
                     previous_tickets = active_positions_cache.get(inst_id, set())
                     active_positions_cache[inst_id] = current_tickets
+                    live_tickets_by_instance[inst_id] = current_tickets
 
                     newly_opened_tickets = current_tickets - previous_tickets
                     no_sl_opened = 0
@@ -1202,6 +1345,11 @@ def poller_thread():
                                         f"ℹ️ {inst_name} hit +{unrealized_pct:.2f}% unrealized. I sent an alert earlier "
                                         f"that wasn't armed — this is just a confirmation, closing is on you from here."
                                     )
+                                    profit_lock.record_cross(
+                                        c, inst_id, current_date_str, lock_target, unrealized_pct,
+                                        equity - balance, start_equity, equity, balance,
+                                        r.get("positions", []), armed=False
+                                    )
                                     state["status"] = "MISSED"
                                 elif unrealized_pct >= pre_alert_level:
                                     token = secrets.token_hex(4)
@@ -1219,6 +1367,11 @@ def poller_thread():
                                         f"ℹ️ {inst_name} hit +{unrealized_pct:.2f}% unrealized. I sent an alert earlier "
                                         f"that wasn't armed — this is just a confirmation, closing is on you from here."
                                     )
+                                    profit_lock.record_cross(
+                                        c, inst_id, current_date_str, lock_target, unrealized_pct,
+                                        equity - balance, start_equity, equity, balance,
+                                        r.get("positions", []), armed=False
+                                    )
                                     state["status"] = "MISSED"
                                     state["token"] = None
                                 elif unrealized_pct <= disarm_level:
@@ -1226,6 +1379,15 @@ def poller_thread():
                                     state["token"] = None
                             elif status == "ARMED":
                                 if unrealized_pct >= lock_target:
+                                    # Logged as the control group even though there is no
+                                    # regret to measure: it is what makes "armed keeps 100%
+                                    # of peak, unarmed keeps N%" a comparison rather than an
+                                    # assertion.
+                                    profit_lock.record_cross(
+                                        c, inst_id, current_date_str, lock_target, unrealized_pct,
+                                        equity - balance, start_equity, equity, balance,
+                                        r.get("positions", []), armed=True
+                                    )
                                     if auto_close_enabled:
                                         close_res = close_instance_positions((inst_id, inst_name, inst_path_by_id.get(inst_id)))
                                         send_telegram_message(
@@ -1280,6 +1442,17 @@ def poller_thread():
                                 f"is currently disabled so it wasn't closed or locked. Please close manually."
                             )
 
+                # Grade any profit-lock cluster whose positions have all closed. Throttled
+                # because the poller runs twice a second and this is a multi-table read;
+                # nothing downstream needs sub-minute freshness.
+                global last_profit_lock_resolve
+                if time.time() - last_profit_lock_resolve >= 30:
+                    last_profit_lock_resolve = time.time()
+                    try:
+                        profit_lock.resolve_open_events(c, live_tickets_by_instance)
+                    except Exception as e:
+                        logging.error(f"Profit-lock resolve failed: {e}")
+
                 for inst in instances:
                     inst_id = inst[0]
                     inst_name = inst[1]
@@ -1307,31 +1480,42 @@ def poller_thread():
                     daily_report = build_risk_report("daily", risk_payload, c, yesterday_date_str, yesterday_date_str, yesterday_ts_from, yesterday_ts_to)
                     send_telegram_message(daily_report)
 
+                    # Weekly and monthly reviews now live in the cloud app as frozen,
+                    # notes-able report documents rather than chat messages -- Telegram gets
+                    # only a pointer. The daily report above is deliberately unchanged: it is
+                    # the one that has to reach you when you are not looking at anything.
                     if datetime.utcnow().weekday() == 5:
                         # Saturday: report the trading week just finished (Monday -> yesterday/Friday)
                         today_dt = datetime.utcnow()
                         week_start_dt = today_dt - timedelta(days=5)
-                        week_start_str = week_start_dt.strftime("%Y-%m-%d")
-                        ts_from = int(datetime(week_start_dt.year, week_start_dt.month, week_start_dt.day, tzinfo=timezone.utc).timestamp())
-                        ts_to = int(datetime(today_dt.year, today_dt.month, today_dt.day, tzinfo=timezone.utc).timestamp())
-                        weekly_report = build_risk_report("weekly", risk_payload, c, week_start_str, yesterday_date_str, ts_from, ts_to)
-                        send_telegram_message(weekly_report)
+                        publish_period_report("weekly", week_start_dt.strftime("%Y-%m-%d"), yesterday_date_str)
 
                     if datetime.utcnow().day == 1:
                         today_dt = datetime.utcnow()
                         this_month_start_dt = datetime(today_dt.year, today_dt.month, 1)
                         last_month_end_dt = this_month_start_dt - timedelta(days=1)
                         last_month_start_dt = last_month_end_dt.replace(day=1)
-                        date_from = last_month_start_dt.strftime("%Y-%m-%d")
-                        date_to = last_month_end_dt.strftime("%Y-%m-%d")
-                        ts_from = int(last_month_start_dt.replace(tzinfo=timezone.utc).timestamp())
-                        ts_to = int(this_month_start_dt.replace(tzinfo=timezone.utc).timestamp())
-                        monthly_report = build_risk_report("monthly", risk_payload, c, date_from, date_to, ts_from, ts_to)
-                        send_telegram_message(monthly_report)
+                        publish_period_report(
+                            "monthly",
+                            last_month_start_dt.strftime("%Y-%m-%d"),
+                            last_month_end_dt.strftime("%Y-%m-%d"),
+                        )
 
                 if last_summary_date != current_date_str:
                     last_summary_date = current_date_str
 
+            # This loop wrote nothing to disk for its entire existence before this line:
+            # sqlite3's default isolation_level opens an implicit transaction on the first
+            # INSERT/UPDATE, and close() without commit() rolls it back. risk_snapshots and
+            # daily_equity_baseline were both empty in a live DB with 84 synced trades,
+            # and profit_lock_events writes go through this same connection.
+            #
+            # Guarded on in_transaction so the fsync only happens on cycles that actually
+            # wrote something. The poller runs twice a second and most passes write
+            # nothing, so an unconditional commit here would be 2 fsyncs/second of pure
+            # waste.
+            if conn.in_transaction:
+                conn.commit()
             conn.close()
         except Exception as e:
             logging.error(f"Poller thread error: {e}")
@@ -2302,6 +2486,61 @@ def sync_trading_log(full=False):
                         row["comment"], row["commission"], row["swap"], row["raw_profit"],
                         row["local_start_time"], row["local_time"], sl_at_open, tp_at_open,
                         entry_risk_usd, row["entry_price"], row["exit_price"]
+                    ))
+
+                    # trade_history rides on this same pass deliberately: it reuses the
+                    # history_deals_get() result already fetched above rather than making its
+                    # own call, so adding the analytics table costs zero extra MT5 terminal
+                    # round-trips. That matters because the terminal serialises requests, and
+                    # a PROVIDER copier worker is polling this same terminal every 10ms --
+                    # extra history queries here would land directly on copier latency.
+                    #
+                    # Upsert, never DELETE: unlike trading_log above, this row must survive a
+                    # full trading_log rebuild.
+                    open_server = int(row["entry_deal"].time)
+                    close_server = int(row["time"])
+                    c.execute('''
+                        INSERT INTO trade_history (
+                            instance_id, position_id, ticket, symbol, direction, volume,
+                            open_time_server, close_time_server, open_time_utc, close_time_utc,
+                            broker_offset_sec, duration_sec,
+                            entry_price, exit_price, sl_at_open, tp_at_open,
+                            raw_profit, commission, swap, profit,
+                            entry_risk_usd, magic, comment, first_seen_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(instance_id, position_id) DO UPDATE SET
+                            ticket = excluded.ticket,
+                            symbol = excluded.symbol,
+                            direction = excluded.direction,
+                            volume = excluded.volume,
+                            open_time_server = excluded.open_time_server,
+                            close_time_server = excluded.close_time_server,
+                            open_time_utc = excluded.open_time_utc,
+                            close_time_utc = excluded.close_time_utc,
+                            broker_offset_sec = excluded.broker_offset_sec,
+                            duration_sec = excluded.duration_sec,
+                            entry_price = excluded.entry_price,
+                            exit_price = excluded.exit_price,
+                            sl_at_open = excluded.sl_at_open,
+                            tp_at_open = excluded.tp_at_open,
+                            raw_profit = excluded.raw_profit,
+                            commission = excluded.commission,
+                            swap = excluded.swap,
+                            profit = excluded.profit,
+                            entry_risk_usd = excluded.entry_risk_usd,
+                            magic = excluded.magic,
+                            comment = excluded.comment
+                    ''', (
+                        inst_id, row["position_id"], row["ticket"], row["symbol"],
+                        row["direction"], row["volume"],
+                        open_server, close_server,
+                        row["local_start_time"], row["local_time"],
+                        # duration comes off the server frame, where the offset cancels, so it
+                        # is exact regardless of which side of a DST change the trade sits on.
+                        time_offset, max(0, close_server - open_server),
+                        row["entry_price"], row["exit_price"], sl_at_open, tp_at_open,
+                        row["raw_profit"], row["commission"], row["swap"], row["profit"],
+                        entry_risk_usd, row["magic"], row["comment"], int(time.time())
                     ))
                     synced_here += 1
                 except Exception as e:
@@ -3419,6 +3658,11 @@ def _backfill_mae_mfe(inst_id, inst_path, limit=None):
                 # profit, the best can never be a loss, whatever rounding says.
                 c.execute(
                     "UPDATE trading_log SET mae_usd = ?, mfe_usd = ? WHERE instance_id = ? AND position_id = ?",
+                    (min(0.0, mae), max(0.0, mfe), inst_id, pid)
+                )
+                # Mirror into the analytics table, which is keyed on the same identity.
+                c.execute(
+                    "UPDATE trade_history SET mae_usd = ?, mfe_usd = ? WHERE instance_id = ? AND position_id = ?",
                     (min(0.0, mae), max(0.0, mfe), inst_id, pid)
                 )
                 filled += 1
